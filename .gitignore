@@ -1,7 +1,4 @@
-
-### Python / Backend ###
-venv/
-.venv/
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -19,52 +16,75 @@ parts/
 sdist/
 var/
 wheels/
+pip-wheel-metadata/
+share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
 MANIFEST
-.pytest_cache/
-.coverage
-htmlcov/
 
-### Node / Frontend ###
-frontend/node_modules/
-frontend/dist/
-frontend/.env
-frontend/.env.local
-frontend/.env.*.local
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
 
-### Environment & Config ###
-.env
-.env.local
-.env.*.local
-*.key
-secrets.txt
+# Node.js / Frontend
+node_modules/
+npm-debug.log
+yarn-error.log
+.next/
+out/
+dist/
+build/
 
-### Database & Generated Files ###
-fraud_detection.db
-*.db
-*.sqlite
-backend/app/ml/saved_models/
-backend/data/processed/
-backend/data/elliptic/
-
-### IDE & OS ###
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 .DS_Store
-Thumbs.db
-*.iml
+*.sublime-project
+*.sublime-workspace
 
-### Logs ###
+# Database
+*.db
+*.sqlite
+*.sqlite3
+fraud_detection.db
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
 *.log
 logs/
-/tmp/
 
-### Root level only (temporary files) ###
+# OS
 .DS_Store
-.env
-fraud_detection.db
+Thumbs.db
+
+# ML / Data
+backend/data/elliptic/
+backend/app/ml/saved_models/*.joblib
+backend/app/ml/saved_models/*.json
+data/processed/features.csv
+data/raw/sample_messy.csv
+
+# Cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+
+# Generated files from ML/Data processing (but keep the code)
+backend/data/raw/*.csv
+!backend/data/generate_synthetic.py
+!backend/data/load_elliptic.py

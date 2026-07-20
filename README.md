@@ -18,9 +18,9 @@ A graph-based financial fraud detection & investigation system.
 - [x] Phase 9A: ML scoring — RF / XGBoost / Isolation Forest (XGBoost F1 ≈ 0.83)
 - [x] Phase 9B: GNN — GCN/GraphSAGE on synthetic graph + Elliptic benchmark
 - [x] Phase 10: Fraud alerts (rule + ML sources, full status lifecycle)
-- [x] Phase 11: Fraud ring detection + visualization (54 rings, ~97% purity)  <-- you are here
+- [x] Phase 11: Fraud ring detection + visualization (54 rings, ~97% purity)
 - [ ] Phase 12: Investigation cases
-- [ ] Phase 13: Dashboard
+- [x] Phase 13: Dashboard (stats, charts, top-risk view)  <-- you are here
 - [ ] Phase 14: Reports & export
 
 ## Generate & seed the synthetic dataset

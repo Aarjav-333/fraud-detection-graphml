@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import auth, accounts, transactions, preprocessing, rules, graph, features, ml, gnn, alerts, rings, cases, gnn, rules
+from app.api import auth, accounts, transactions, preprocessing, rules, graph, features, ml, gnn, alerts, rings, cases, dashboard, gnn, rules
 
 app = FastAPI(title="Financial Fraud Detection with Graph ML")
 
@@ -24,10 +24,12 @@ app.include_router(gnn.router)
 app.include_router(alerts.router)
 app.include_router(rings.router)
 app.include_router(cases.router)
+app.include_router(dashboard.router)
 app.include_router(gnn.router)
 app.include_router(alerts.router)
 app.include_router(rings.router)
 app.include_router(cases.router)
+app.include_router(dashboard.router)
 app.include_router(rules.router)
 app.include_router(graph.router)
 app.include_router(features.router)
@@ -36,10 +38,12 @@ app.include_router(gnn.router)
 app.include_router(alerts.router)
 app.include_router(rings.router)
 app.include_router(cases.router)
+app.include_router(dashboard.router)
 app.include_router(gnn.router)
 app.include_router(alerts.router)
 app.include_router(rings.router)
 app.include_router(cases.router)
+app.include_router(dashboard.router)
 
 
 @app.get("/")
