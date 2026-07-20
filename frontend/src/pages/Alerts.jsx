@@ -5,9 +5,11 @@ import {
   MenuItem, Select, InputAdornment, LinearProgress, Snackbar, Slider,
 } from '@mui/material'
 import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive'
+import FolderSharedIcon from '@mui/icons-material/FolderShared'
 import SearchIcon from '@mui/icons-material/Search'
 import RiskChip from '../components/RiskChip'
 import { generateAlerts, getAlertsSummary, listAlerts, updateAlertStatus } from '../api/alerts'
+import { createCase } from '../api/cases'
 
 const STATUSES = ['Pending', 'Under Review', 'Confirmed Fraud', 'False Positive', 'Resolved']
 const STATUS_COLOR = {
@@ -68,6 +70,16 @@ export default function Alerts() {
     setToast(`${uid} → ${status}`)
     loadSummary()
     setRows((prev) => prev.map((r) => (r.alert_uid === uid ? { ...r, status } : r)))
+  }
+
+  async function handleCreateCase(alert) {
+    try {
+      const c = await createCase({ account_uid: alert.account_uid, alert_uid: alert.alert_uid })
+      setToast(`${c.case_uid} opened for ${alert.alert_uid}`)
+      loadSummary(); loadRows()
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Could not create case.')
+    }
   }
 
   return (
@@ -148,6 +160,7 @@ export default function Alerts() {
                 <TableCell>Risk</TableCell>
                 <TableCell>Status</TableCell>
                 <TableCell>Created</TableCell>
+                <TableCell align="right">Case</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -178,10 +191,15 @@ export default function Alerts() {
                     </Select>
                   </TableCell>
                   <TableCell>{r.created_at ? new Date(r.created_at).toLocaleDateString('en-IN') : '—'}</TableCell>
+                  <TableCell align="right">
+                    <Button size="small" startIcon={<FolderSharedIcon />} onClick={() => handleCreateCase(r)}>
+                      Open case
+                    </Button>
+                  </TableCell>
                 </TableRow>
               ))}
               {!loading && rows.length === 0 && (
-                <TableRow><TableCell colSpan={8} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                <TableRow><TableCell colSpan={9} align="center" sx={{ py: 4, color: 'text.secondary' }}>
                   No alerts yet — run Rule Detection and ML Scoring, then click "Generate alerts".
                 </TableCell></TableRow>
               )}
