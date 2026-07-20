@@ -20,7 +20,7 @@ A graph-based financial fraud detection & investigation system.
 - [x] Phase 10: Fraud alerts (rule + ML sources, full status lifecycle)
 - [x] Phase 11: Fraud ring detection + visualization (54 rings, ~97% purity)
 - [ ] Phase 12: Investigation cases
-- [x] Phase 13: Dashboard (stats, charts, top-risk view)  <-- you are here
+- [x] Phase 13: Dashboard (stats, charts, top-risk view)
 - [ ] Phase 14: Reports & export
 
 ## Generate & seed the synthetic dataset
