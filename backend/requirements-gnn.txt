@@ -1,0 +1,3 @@
+# GNN dependencies (Phase 9B) - large download (~200MB+), CPU-only PyTorch is fine
+torch>=2.2
+torch-geometric>=2.5
