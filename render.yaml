@@ -1,0 +1,22 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Deploy: Render dashboard -> New -> Blueprint -> select this repo
+services:
+  - type: web
+    name: fraud-detection-backend
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: bash scripts/render_start.sh
+    healthCheckPath: /
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false          # set this yourself in the Render dashboard
+      - key: ALLOWED_ORIGINS
+        value: http://localhost:5173   # update after your Vercel URL exists
+      - key: DATABASE_URL
+        value: sqlite:///./fraud_detection.db
