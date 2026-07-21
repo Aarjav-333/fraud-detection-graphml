@@ -16,7 +16,13 @@ def init():
     try:
         existing = db.query(User).filter(User.username == settings.ADMIN_USERNAME).first()
         if existing:
-            print(f"Admin '{settings.ADMIN_USERNAME}' already exists.")
+            # Keep the admin password in sync with the current ADMIN_PASSWORD env var.
+            # Without this, an admin created on an earlier boot (e.g. before the env
+            # var was set) would keep its old password and cause 401 on login.
+            existing.hashed_password = hash_password(settings.ADMIN_PASSWORD)
+            existing.role = "admin"
+            db.commit()
+            print(f"Admin '{settings.ADMIN_USERNAME}' password synced to current ADMIN_PASSWORD.")
         else:
             admin = User(
                 username=settings.ADMIN_USERNAME,
