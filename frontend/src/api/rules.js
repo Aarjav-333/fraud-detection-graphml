@@ -5,5 +5,5 @@ export async function getRulesStatus() {
 }
 export async function runRules() {
   // rule engine scans 80k txns; allow a few minutes
-  return (await client.post('/api/rules/run', null, { timeout: 300000 })).data
+  return (await client.post('/api/rules/run', null, { timeout: 600000 })).data
 }
