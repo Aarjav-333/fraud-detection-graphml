@@ -14,6 +14,7 @@ Running the engine:
 """
 from collections import defaultdict
 from datetime import timedelta
+import bisect
 
 import pandas as pd
 from sqlalchemy.orm import Session
@@ -100,23 +101,36 @@ def run_rules(txns: pd.DataFrame, accounts: pd.DataFrame) -> dict:
     fan("receiver_uid", "sender_uid", "fan_in")
     fan("sender_uid", "receiver_uid", "fan_out")
 
-    # R6 circular transfers A -> B -> C -> A (3-hop cycles within window)
+   # R6 circular transfers A -> B -> C -> A (3-hop cycles within window)
+    # Uses bisect on each sender's time-sorted transactions to only look inside
+    # the time window, instead of scanning every transaction that sender ever
+    # made. The old version was O(n x avg_fanout^2) with no pruning — fine on
+    # a fast local CPU, far too slow on a throttled free-tier host.
     cwin = timedelta(hours=CIRCLE_WINDOW_H)
-    by_sender = defaultdict(list)
+    by_sender_ts = defaultdict(list)
+    by_sender_rows = defaultdict(list)
     for row in txns.itertuples():
-        by_sender[row.sender_uid].append(row)
+        by_sender_ts[row.sender_uid].append(row.timestamp)
+        by_sender_rows[row.sender_uid].append(row)
+
+    def _window_slice(sender, start_ts, end_ts):
+        ts_list = by_sender_ts.get(sender)
+        if not ts_list:
+            return ()
+        lo = bisect.bisect_left(ts_list, start_ts)
+        hi = bisect.bisect_right(ts_list, end_ts)
+        return by_sender_rows[sender][lo:hi]
+
     for t1 in txns.itertuples():
         a, b = t1.sender_uid, t1.receiver_uid
         if a == b:
             continue
-        for t2 in by_sender.get(b, ()):
+        for t2 in _window_slice(b, t1.timestamp, t1.timestamp + cwin):
             if t2.receiver_uid in (a, b):
                 continue
-            if not (timedelta(0) <= t2.timestamp - t1.timestamp <= cwin):
-                continue
             c = t2.receiver_uid
-            for t3 in by_sender.get(c, ()):
-                if t3.receiver_uid == a and timedelta(0) <= t3.timestamp - t2.timestamp <= cwin:
+            for t3 in _window_slice(c, t2.timestamp, t2.timestamp + cwin):
+                if t3.receiver_uid == a:
                     hits["circular"].update([t1.txn_uid, t2.txn_uid, t3.txn_uid])
     return hits
 
