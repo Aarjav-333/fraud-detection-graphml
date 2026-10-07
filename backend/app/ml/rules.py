@@ -12,7 +12,7 @@ Running the engine:
   - marks matched transactions status='suspicious'
   - raises involved accounts' risk_level (Medium, High if hit by 2+ rules)
 """
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import timedelta
 import bisect
 
@@ -87,21 +87,31 @@ def run_rules(txns: pd.DataFrame, accounts: pd.DataFrame) -> dict:
     fwin = timedelta(hours=FAN_WINDOW_H)
 
     def fan(group_col, counter_col, out_key):
+        # Single pass per account: a Counter of the counterparties inside the
+        # window gives the distinct count in O(1) per step, instead of slicing
+        # the window and calling nunique() for every row.
         for _, g in txns.groupby(group_col):
-            g = g.reset_index(drop=True)
-            ts = g["timestamp"]
+            ts = g["timestamp"].tolist()
+            others = g[counter_col].tolist()
+            uids = g["txn_uid"].tolist()
+            in_window = Counter()
             left = 0
-            for right in range(len(g)):
+            marked = 0  # uids[left:marked] are already in hits
+            for right in range(len(ts)):
+                in_window[others[right]] += 1
                 while ts[right] - ts[left] > fwin:
+                    in_window[others[left]] -= 1
+                    if not in_window[others[left]]:
+                        del in_window[others[left]]
                     left += 1
-                window = g.iloc[left:right + 1]
-                if window[counter_col].nunique() >= FAN_THRESHOLD:
-                    hits[out_key].update(window["txn_uid"])
+                if len(in_window) >= FAN_THRESHOLD:
+                    hits[out_key].update(uids[max(left, marked):right + 1])
+                    marked = right + 1
 
     fan("receiver_uid", "sender_uid", "fan_in")
     fan("sender_uid", "receiver_uid", "fan_out")
 
-   # R6 circular transfers A -> B -> C -> A (3-hop cycles within window)
+    # R6 circular transfers A -> B -> C -> A (3-hop cycles within window)
     # Uses bisect on each sender's time-sorted transactions to only look inside
     # the time window, instead of scanning every transaction that sender ever
     # made. The old version was O(n x avg_fanout^2) with no pruning — fine on
