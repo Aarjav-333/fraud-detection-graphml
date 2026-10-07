@@ -9,16 +9,16 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: bash scripts/render_start.sh
     healthCheckPath: /
+    # APP_ENV is deliberately unset: the backend then runs in production mode and
+    # refuses to boot with a placeholder/weak SECRET_KEY or ADMIN_PASSWORD.
     envVars:
-      - key: APP_ENV
-        value: production    # backend refuses to boot with default SECRET_KEY/ADMIN_PASSWORD
       - key: SECRET_KEY
         generateValue: true
       - key: ADMIN_USERNAME
         value: admin
       - key: ADMIN_PASSWORD
-        sync: false          # set this yourself in the Render dashboard
+        sync: false          # set this yourself (12+ characters)
       - key: ALLOWED_ORIGINS
-        value: http://localhost:5173   # update after your Vercel URL exists
+        sync: false          # your Vercel URL; dashboard edits survive Blueprint syncs
       - key: DATABASE_URL
         value: sqlite:///./fraud_detection.db

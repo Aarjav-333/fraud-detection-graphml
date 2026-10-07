@@ -1,11 +1,14 @@
-from pydantic import model_validator
+from urllib.parse import urlsplit
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Placeholder values shipped in this repo (config defaults, .env.example, README).
 # They are fine for local dev but must never reach a public deployment.
-_PLACEHOLDER_SECRET_KEYS = {"dev-secret-change-me", "change-this-to-a-long-random-string"}
-_PLACEHOLDER_ADMIN_PASSWORDS = {"admin123"}
+_PLACEHOLDER_SECRET_KEYS = ("dev-secret-change-me", "change-this-to-a-long-random-string")
+_PLACEHOLDER_ADMIN_PASSWORDS = ("admin123",)
 _MIN_SECRET_KEY_LENGTH = 32
+_MIN_SECRET_KEY_DISTINCT_CHARS = 10  # rejects "aaaa...", still allows hex keys
+_MIN_ADMIN_PASSWORD_LENGTH = 12
 
 
 class Settings(BaseSettings):
@@ -17,42 +20,70 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str = "admin123"
     # Comma-separated list, e.g. "https://your-app.vercel.app,http://localhost:5173"
     ALLOWED_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
-    # "production" turns on the insecure-defaults check below.
-    APP_ENV: str = "development"
-    # Render sets RENDER=true on every service, so a Render deploy is treated as
-    # production even if APP_ENV was never configured.
-    RENDER: bool = False
+    # Only "development" allows the placeholder secrets above. Anything else
+    # (including unset) is treated as production, so a deploy that forgets
+    # this variable fails closed instead of running with public defaults.
+    APP_ENV: str = "production"
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # hide_input_in_errors keeps secret values out of validation errors/logs.
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
 
     @property
-    def is_production(self) -> bool:
-        return self.APP_ENV.strip().lower() == "production" or self.RENDER
+    def is_development(self) -> bool:
+        return self.APP_ENV.strip().lower() == "development"
 
     @property
     def cors_origins(self) -> list[str]:
-        # Browsers send Origin without a trailing slash, so strip one if it was
-        # pasted in from the address bar - otherwise the origin never matches.
-        return [o.strip().rstrip("/") for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
+        # Browsers send Origin as lowercase scheme://host[:port] with no path or
+        # trailing slash, so reduce each entry to that - a URL pasted from the
+        # address bar (e.g. https://My-App.vercel.app/rules) then still matches.
+        origins = []
+        for entry in self.ALLOWED_ORIGINS.split(","):
+            entry = entry.strip()
+            parts = urlsplit(entry)
+            if parts.scheme and parts.netloc:
+                entry = f"{parts.scheme}://{parts.netloc}".lower()
+            else:
+                entry = entry.rstrip("/")  # "*" or a malformed entry, kept as-is
+            if entry:
+                origins.append(entry)
+        return origins
 
-    @model_validator(mode="after")
-    def _reject_insecure_defaults_in_production(self):
-        if not self.is_production:
-            return self
-        problems = []
-        if self.SECRET_KEY in _PLACEHOLDER_SECRET_KEYS:
-            problems.append("SECRET_KEY is a placeholder value (anyone could forge login tokens)")
-        elif len(self.SECRET_KEY) < _MIN_SECRET_KEY_LENGTH:
-            problems.append(f"SECRET_KEY must be at least {_MIN_SECRET_KEY_LENGTH} characters")
-        if not self.ADMIN_PASSWORD or self.ADMIN_PASSWORD in _PLACEHOLDER_ADMIN_PASSWORDS:
-            problems.append("ADMIN_PASSWORD is unset or the published default")
-        if problems:
-            raise ValueError(
-                "Refusing to start in production with insecure settings: "
-                + "; ".join(problems)
-                + ". Set these environment variables on your host (see DEPLOYMENT.md)."
-            )
-        return self
+
+def _insecure_setting_problems(s: Settings) -> list[str]:
+    problems = []
+
+    key = s.SECRET_KEY
+    if key != key.strip():
+        problems.append("SECRET_KEY has leading/trailing whitespace")
+    elif any(p in key.lower() for p in _PLACEHOLDER_SECRET_KEYS):
+        problems.append("SECRET_KEY contains a placeholder value (anyone could forge login tokens)")
+    elif len(key) < _MIN_SECRET_KEY_LENGTH:
+        problems.append(f"SECRET_KEY must be at least {_MIN_SECRET_KEY_LENGTH} characters")
+    elif len(set(key)) < _MIN_SECRET_KEY_DISTINCT_CHARS:
+        problems.append("SECRET_KEY is too repetitive to be random")
+
+    password = s.ADMIN_PASSWORD
+    if password != password.strip():
+        problems.append("ADMIN_PASSWORD has leading/trailing whitespace")
+    elif any(p in password.lower() for p in _PLACEHOLDER_ADMIN_PASSWORDS):
+        problems.append("ADMIN_PASSWORD contains the published default (admin123)")
+    elif len(password) < _MIN_ADMIN_PASSWORD_LENGTH:
+        problems.append(f"ADMIN_PASSWORD must be at least {_MIN_ADMIN_PASSWORD_LENGTH} characters")
+
+    return problems
 
 
 settings = Settings()
+
+if not settings.is_development:
+    _problems = _insecure_setting_problems(settings)
+    if _problems:
+        # A plain RuntimeError, not a pydantic error, so no setting values are
+        # echoed into deploy logs - only the names of what is wrong.
+        raise RuntimeError(
+            f"Refusing to start with APP_ENV={settings.APP_ENV!r} and insecure settings: "
+            + "; ".join(_problems)
+            + ". Set them on your host (see DEPLOYMENT.md), or set APP_ENV=development "
+            "for local development."
+        )
