@@ -72,8 +72,9 @@ In Render -> your service -> Environment, make sure:
 
 The database seeds with raw accounts/transactions automatically, but the
 detection pipeline is a manual, explicit step (same as local) -- log in
-(admin / your password) and click through in order:
-Graph Analysis -> Features -> ML Scoring -> Rule Detection -> Fraud Alerts -> Fraud Rings
+(admin / your password) and click through the sidebar in order:
+Rule Detection -> Graph Analysis -> Features -> ML Scoring -> Fraud Alerts -> Fraud Rings
+(Features must run before ML Scoring; the feature matrix isn't in the repo.)
 
 GNN training will show "dependencies not installed" -- requirements-gnn.txt
 is intentionally not installed on Render's free tier (512MB RAM can't hold

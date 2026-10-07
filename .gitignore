@@ -72,7 +72,6 @@ backend/data/elliptic/
 backend/app/ml/saved_models/*.joblib
 backend/app/ml/saved_models/*.json
 backend/data/processed/features.csv
-data/raw/sample_messy.csv
 
 # Cache
 .pytest_cache/

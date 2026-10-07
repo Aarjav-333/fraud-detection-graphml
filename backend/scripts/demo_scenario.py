@@ -25,20 +25,25 @@ figure counts the demo transactions as false positives.
 Run from the backend/ folder, after init_db + seed_data:
     python -m scripts.demo_scenario               # plant + run pipeline + report
     python -m scripts.demo_scenario --plant-only  # plant, then click through the UI
-    python -m scripts.demo_scenario --cleanup     # remove all demo data
+    python -m scripts.demo_scenario --cleanup     # remove the demo again
 
-Re-running replaces the previous demo data. The pipeline steps are the same ones
-the UI runs, so they refresh scores, alerts and rings for the whole dataset and
-rewrite data/processed/features.csv.
+The pipeline steps are the same ones the UI runs, in the sidebar's order, so they
+refresh scores, alerts and rings for the whole dataset - and retraining with the
+demo present can raise alerts on real accounts too. Re-planting and --cleanup
+therefore remove, besides all demo data, every alert raised since the demo was
+planted that nobody has worked on yet (still Pending, no case). --cleanup then
+re-runs every step except alert generation, so scores, features and rings no
+longer include the demo.
 """
 import argparse
+import json
+import os
 import random
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 
-import pandas as pd
-from sqlalchemy import or_
+from sqlalchemy import func, or_, select
 
 from app.database import Base, SessionLocal, engine
 from app import models  # noqa: F401  (registers tables)
@@ -49,14 +54,15 @@ from app.models.account import Account
 from app.models.alert import Alert
 from app.models.case import Case
 from app.models.graph_metric import GraphMetric
+from app.models.rule_hit import RuleHit
 from app.models.transaction import Transaction
 
 PREFIX = "DEMO-"
-LIKE = f"{PREFIX}%"
 BASE = datetime(2024, 11, 14, 1, 30)   # a night inside the synthetic data's 2024 range
 ML_ALERT_THRESHOLD = 0.8               # same default as the Fraud Alerts page
 YEAR_START, YEAR_END = datetime(2024, 1, 1), datetime(2024, 12, 31, 23, 59)
 QUIET_BEFORE, QUIET_AFTER = timedelta(days=1), timedelta(days=2)  # no background txns near the scenario
+STATE_JSON = os.path.join(fraud_ring.SAVED_DIR, "demo_state.json")  # gitignored, like rings.json
 
 FEEDERS = [f"{PREFIX}FEED{i:02d}" for i in range(1, 10)]
 MULE = f"{PREFIX}MULE"
@@ -91,6 +97,12 @@ RULE_SHORT = {
     "fan_out": "R5 fan-out",
     "circular": "R6 circular",
 }
+
+
+def _is_demo(column):
+    # A case-sensitive prefix match. Not LIKE 'DEMO-%': SQLite's LIKE ignores
+    # case, so it would also match (and delete) a real account named "demo-...".
+    return func.substr(column, 1, len(PREFIX)) == PREFIX
 
 
 def _accounts() -> list[dict]:
@@ -141,19 +153,31 @@ def _transactions() -> list[tuple[str, dict]]:
     return rows
 
 
-def _background(accounts: list[dict], real_uids: list[str]) -> list[dict]:
+def _random_time(rng: random.Random, start: datetime) -> datetime | None:
+    """A random time between start and the end of 2024, away from the scenario."""
+    span = (YEAR_END - start).total_seconds()
+    for _ in range(100):
+        if span <= 0:
+            break
+        ts = start + timedelta(seconds=rng.uniform(0, span))
+        if not BASE - QUIET_BEFORE <= ts <= BASE + QUIET_AFTER:
+            return ts
+    return None
+
+
+def _background(accounts: list[dict], real_created: dict[str, datetime]) -> list[dict]:
     """Ordinary customer activity for each demo account, mirroring
     data/generate_synthetic.plant_normal (lognormal amounts, random counterparties)."""
     rng = random.Random(42)
+    real_uids = sorted(real_created)
     rows = []
     for acc in accounts:
-        start = max(acc["created_at"], YEAR_START)
-        span = (YEAR_END - start).total_seconds()
         for _ in range(rng.randint(24, 36)):
-            ts = start + timedelta(seconds=rng.uniform(0, span))
-            while BASE - QUIET_BEFORE <= ts <= BASE + QUIET_AFTER:
-                ts = start + timedelta(seconds=rng.uniform(0, span))
             other = rng.choice(real_uids)
+            # never date a transaction before either account was opened
+            ts = _random_time(rng, max(acc["created_at"], real_created[other] or YEAR_START, YEAR_START))
+            if ts is None:
+                continue
             sender, receiver = ((acc["account_uid"], other) if rng.random() < 0.5
                                 else (other, acc["account_uid"]))
             rows.append(dict(
@@ -165,38 +189,78 @@ def _background(accounts: list[dict], real_uids: list[str]) -> list[dict]:
     return rows
 
 
+def _load_state() -> dict | None:
+    if os.path.exists(STATE_JSON):
+        with open(STATE_JSON) as fh:
+            return json.load(fh)
+    return None
+
+
+def _save_state(db) -> None:
+    os.makedirs(os.path.dirname(STATE_JSON), exist_ok=True)
+    with open(STATE_JSON, "w") as fh:
+        json.dump({"planted_at": datetime.now().isoformat(timespec="seconds"),
+                   "max_alert_id": db.query(func.max(Alert.id)).scalar() or 0}, fh)
+
+
 def remove_demo_data(db) -> dict:
-    """Delete every demo account plus anything that references one."""
-    touches_demo = or_(Transaction.txn_uid.like(LIKE), Transaction.sender_uid.like(LIKE),
-                       Transaction.receiver_uid.like(LIKE))
+    """Delete demo accounts and everything that references them, plus alerts
+    raised since the demo was planted that nobody has worked on yet."""
+    # The state file is only trusted while the demo is actually planted in this
+    # database; after a re-seed its alert ids would point at unrelated alerts.
+    state = _load_state() if db.query(Account.id).filter(_is_demo(Account.account_uid)).first() else None
+    demo_alert = or_(_is_demo(Alert.account_uid), _is_demo(Alert.transaction_uid))
+    demo_alert_uids = select(Alert.alert_uid).where(demo_alert)
+    touches_demo = or_(_is_demo(Transaction.txn_uid), _is_demo(Transaction.sender_uid),
+                       _is_demo(Transaction.receiver_uid))
     removed = {
-        "cases": db.query(Case).filter(Case.account_uid.like(LIKE)).delete(synchronize_session=False),
-        "alerts": db.query(Alert).filter(or_(Alert.account_uid.like(LIKE),
-                                             Alert.transaction_uid.like(LIKE)))
-                    .delete(synchronize_session=False),
-        "graph_metrics": db.query(GraphMetric).filter(GraphMetric.account_uid.like(LIKE))
+        # cases on demo accounts, or on an alert about a demo transaction (which
+        # can name a real account) - deleting the alert alone would orphan the case
+        "cases": db.query(Case).filter(or_(_is_demo(Case.account_uid), Case.alert_uid.in_(demo_alert_uids)))
+                   .delete(synchronize_session=False),
+        "alerts": db.query(Alert).filter(demo_alert).delete(synchronize_session=False),
+    }
+
+    kept = 0
+    if state:
+        since_plant = Alert.id > state["max_alert_id"]
+        in_a_case = Alert.alert_uid.in_(select(Case.alert_uid).where(Case.alert_uid.isnot(None)))
+        removed["alerts"] += (db.query(Alert).filter(since_plant, Alert.status == "Pending", ~in_a_case)
+                                .delete(synchronize_session=False))
+        kept = db.query(Alert).filter(since_plant).count()
+
+    removed |= {
+        "rule_hits": db.query(RuleHit)
+                       .filter(RuleHit.txn_uid.in_(select(Transaction.txn_uid).where(touches_demo)))
+                       .delete(synchronize_session=False),
+        "graph_metrics": db.query(GraphMetric).filter(_is_demo(GraphMetric.account_uid))
                            .delete(synchronize_session=False),
         "transactions": db.query(Transaction).filter(touches_demo).delete(synchronize_session=False),
-        "accounts": db.query(Account).filter(Account.account_uid.like(LIKE)).delete(synchronize_session=False),
+        "accounts": db.query(Account).filter(_is_demo(Account.account_uid)).delete(synchronize_session=False),
     }
     db.commit()
+    if os.path.exists(STATE_JSON):
+        os.remove(STATE_JSON)
+    if kept:
+        print(f"Kept {kept} alerts raised since the demo was planted: someone has worked on them.")
     return removed
 
 
 def plant(db) -> None:
-    real_uids = sorted(uid for (uid,) in db.query(Account.account_uid)
-                       .filter(~Account.account_uid.like(LIKE)))
-    if not real_uids:
+    real_created = dict(db.query(Account.account_uid, Account.created_at)
+                          .filter(~_is_demo(Account.account_uid)))
+    if not real_created:
         raise SystemExit("No base dataset found. Seed it first:\n"
                          "  python -m data.generate_synthetic\n  python -m scripts.seed_data")
     removed = remove_demo_data(db)
     if any(removed.values()):
         print("Removed previous demo data: " + ", ".join(f"{n} {k}" for k, n in removed.items() if n))
     accounts, txns = _accounts(), _transactions()
-    background = _background(accounts, real_uids)
+    background = _background(accounts, real_created)
     db.bulk_insert_mappings(Account, accounts)
     db.bulk_insert_mappings(Transaction, [row for _, row in txns] + background)
     db.commit()
+    _save_state(db)
     print(f"Planted {len(accounts)} accounts, {len(txns)} scenario transactions and "
           f"{len(background)} ordinary background transactions (ids start with {PREFIX}).")
     for stage in STAGES:
@@ -205,25 +269,26 @@ def plant(db) -> None:
         print(f"  {stage:16s} {len(stage_rows):2d} txns  Rs {total:>12,.0f}")
 
 
-def run_pipeline(db) -> dict:
-    """Run the same steps, in the same order, as the UI's pipeline pages."""
+def run_pipeline(db, generate_alerts: bool = True) -> dict:
+    """Run the same steps as the UI, in the sidebar's order (GNN skipped)."""
     steps = [
+        ("Rule Detection", rules_engine.apply_rules,
+         lambda r: f"{r['total_suspicious']} suspicious transactions"),
         ("Graph Analysis", graph_analysis.analyze,
          lambda r: f"{r['nodes']} accounts, {r['edges']} edges, {r['cycles_found']} short cycles"),
         ("Features", features.build_and_save,
          lambda r: f"{r['accounts']} accounts x {r['features']} features"),
         ("ML Scoring", baseline.train_and_score,
          lambda r: f"best model {r['best_model']}, test F1 {r['results'][r['best_model']]['f1']}"),
-        ("Rule Detection", rules_engine.apply_rules,
-         lambda r: f"{r['total_suspicious']} suspicious transactions"),
         ("Fraud Alerts", lambda s: alert_engine.generate(s, ml_threshold=ML_ALERT_THRESHOLD),
          lambda r: f"+{r['created_rule_alerts']} rule alerts, +{r['created_ml_alerts']} ML alerts"),
         ("Fraud Rings", fraud_ring.detect,
          lambda r: f"{r['rings_found']} rings, {r['accounts_involved']} accounts"),
     ]
     results = {}
-    print("\nRunning the detection pipeline:")
     for name, fn, describe in steps:
+        if name == "Fraud Alerts" and not generate_alerts:
+            continue
         start = time.perf_counter()
         results[name] = fn(db)
         print(f"  {name:15s} {time.perf_counter() - start:6.1f}s  {describe(results[name])}")
@@ -231,36 +296,28 @@ def run_pipeline(db) -> dict:
 
 
 def report(db, rings: dict) -> None:
-    txn_rows = (db.query(Transaction.txn_uid, Transaction.sender_uid, Transaction.receiver_uid,
-                         Transaction.amount, Transaction.timestamp, Transaction.status)
-                  .filter(or_(Transaction.sender_uid.like(LIKE), Transaction.receiver_uid.like(LIKE)))
-                  .all())
-    status = {r.txn_uid: r.status for r in txn_rows}
+    status = dict(db.query(Transaction.txn_uid, Transaction.status)
+                    .filter(_is_demo(Transaction.txn_uid)))
+    rule_hits = defaultdict(set)
+    for txn_uid, rule in db.query(RuleHit.txn_uid, RuleHit.rule).filter(_is_demo(RuleHit.txn_uid)):
+        rule_hits[txn_uid].add(rule)
     stage_of = {row["txn_uid"]: stage for stage, row in _transactions()}
-
-    # Which rule caught what. Every rule window or cycle that contains a scenario
-    # transaction is keyed on a demo account, so running the rules on all
-    # transactions touching demo accounts gives the full run's verdicts for them.
-    txns_df = pd.DataFrame([tuple(r)[:5] for r in txn_rows],
-                           columns=["txn_uid", "sender_uid", "receiver_uid", "amount", "timestamp"])
-    accounts_df = pd.DataFrame(db.query(Account.account_uid, Account.created_at).all(),
-                               columns=["account_uid", "created_at"])
-    hits = rules_engine.run_rules(txns_df, accounts_df)
 
     print("\nRule engine - did each stage get caught?")
     for stage in STAGES:
         uids = [u for u, s in stage_of.items() if s == stage]
         flagged = sum(status.get(u) == "suspicious" for u in uids)
-        fired = Counter(rule for rule, hit in hits.items() for u in uids if u in hit)
-        rules_text = ", ".join(f"{RULE_SHORT[r]} x{n}" for r, n in fired.items()) or "none"
+        fired = Counter(rule for u in uids for rule in rule_hits[u])
+        rules_text = ", ".join(f"{RULE_SHORT[r]} x{n}" for r, n in sorted(fired.items())) or "none"
         print(f"  {stage:16s} flagged {flagged}/{len(uids)}   {rules_text}")
 
     accounts = (db.query(Account.account_uid, Account.risk_level, Account.fraud_score)
-                  .filter(Account.account_uid.like(LIKE)).all())
+                  .filter(_is_demo(Account.account_uid)).all())
     alert_counts = defaultdict(int)
-    for (uid,) in db.query(Alert.account_uid).filter(Alert.account_uid.like(LIKE)):
+    for (uid,) in db.query(Alert.account_uid).filter(_is_demo(Alert.account_uid)):
         alert_counts[uid] += 1
-    ring_of = {node["id"]: ring for ring in rings.get("rings", []) for node in ring["nodes"]}
+    # member_ids is the full membership; ring["nodes"] is capped at 40 for display
+    ring_of = {uid: ring for ring in rings.get("rings", []) for uid in ring.get("member_ids", [])}
 
     print("\nAccounts - rules risk level, ML score (model was told they are legit), alerts, ring")
     print(f"  {'account':16s} {'role':10s} {'risk':7s} {'ML score':>8s} {'alerts':>6s}  ring")
@@ -269,8 +326,7 @@ def report(db, rings: dict) -> None:
         print(f"  {uid:16s} {ROLES[uid]:10s} {risk:7s} {score or 0:8.3f} {alert_counts[uid]:6d}  "
               f"{ring['ring_id'] if ring else '-'}")
 
-    demo_rings = {r["ring_id"]: r for r in ring_of.values()
-                  if any(n["id"].startswith(PREFIX) for n in r["nodes"])}
+    demo_rings = {ring["ring_id"]: ring for uid, ring in ring_of.items() if uid.startswith(PREFIX)}
     print("\nFraud rings containing demo accounts:")
     if not demo_rings:
         print("  none")
@@ -278,7 +334,15 @@ def report(db, rings: dict) -> None:
         print(f"  {ring['ring_id']}: {ring['size']} accounts, main {ring['main_account']}, "
               f"withdrawal {ring['withdrawal_account'] or '-'}, Rs {ring['total_flow']:,.0f} moved, "
               f"risk {ring['risk']} (ML score {ring['avg_fraud_score']:.2f}, "
-              f"rule score {ring['rule_score']:.2f})")
+              f"rules fired: {' '.join(ring['rules']) or 'none'})")
+
+
+def cleanup(db) -> None:
+    removed = remove_demo_data(db)
+    print("Removed " + ", ".join(f"{n} {k}" for k, n in removed.items()) + ".")
+    if os.path.exists(features.FEATURES_CSV) or os.path.exists(fraud_ring.RINGS_JSON):
+        print("\nRe-running the pipeline without the demo (alert generation skipped):")
+        run_pipeline(db, generate_alerts=False)
 
 
 def main():
@@ -286,28 +350,27 @@ def main():
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--plant-only", action="store_true",
                        help="plant the scenario but leave the pipeline to the UI")
-    group.add_argument("--cleanup", action="store_true", help="remove all demo data and exit")
+    group.add_argument("--cleanup", action="store_true",
+                       help="remove all demo data, then refresh scores, features and rings")
     args = parser.parse_args()
 
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
         if args.cleanup:
-            removed = remove_demo_data(db)
-            print("Removed " + ", ".join(f"{n} {k}" for k, n in removed.items()) + ".")
-            print("Scores, alerts and rings for the other accounts still reflect the last "
-                  "pipeline run; re-run the pipeline from the UI to refresh them.")
+            cleanup(db)
             return
         plant(db)
         if args.plant_only:
-            print("\nNow log in and run, in order: Graph Analysis -> Features -> ML Scoring -> "
-                  "Rule Detection -> Fraud Alerts -> Fraud Rings.\nThen search for "
+            print("\nNow log in and run, in the sidebar's order: Rule Detection -> Graph Analysis -> "
+                  "Features -> ML Scoring -> Fraud Alerts -> Fraud Rings.\nThen search for "
                   f"{PREFIX} on the Accounts, Alerts and Fraud Rings pages.")
             return
+        print("\nRunning the detection pipeline:")
         results = run_pipeline(db)
         report(db, results["Fraud Rings"])
         print(f"\nIn the UI: search for {PREFIX} on Accounts / Alerts, or open the ring on Fraud Rings.")
-        print("Remove the demo data with: python -m scripts.demo_scenario --cleanup")
+        print("Remove the demo again with: python -m scripts.demo_scenario --cleanup")
     finally:
         db.close()
 
