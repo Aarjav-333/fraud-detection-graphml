@@ -71,3 +71,5 @@ npm run dev                     # runs on http://localhost:5173
 
 Open http://localhost:5173, log in with **admin / admin123**.
 Keep BOTH the backend and frontend running at the same time.
+
+See DEPLOYMENT.md for deploying to Render (backend) + Vercel (frontend).
