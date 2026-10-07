@@ -11,7 +11,10 @@ Method:
         main       - highest total received inside the ring
         withdrawal - receives from the main account and sends little onwards
         source     - everyone else (feeding money in)
-  4. Score each ring by average member fraud score and total money moved.
+  4. Score each ring on two signals: the members' average ML fraud score, and a
+     rule score from the rule engine's per-account risk levels. Risk uses the
+     stronger of the two, so a ring the rules caught is not rated Low just
+     because the ML model has not seen that pattern before.
 
 Results are cached to saved_models/rings.json for the UI.
 """
@@ -31,12 +34,19 @@ RINGS_JSON = os.path.join(SAVED_DIR, "rings.json")
 MIN_RING_SIZE = 4
 ML_SCORE_FLOOR = 0.7      # accounts above this join the suspicious subgraph
 MAX_RING_MEMBERS_SHOWN = 40
+# Account.risk_level as set by rules.apply_rules: High = hit by 2+ rules, Medium = 1 rule
+RULE_LEVEL_WEIGHT = {"High": 1.0, "Medium": 0.5}
+
+
+def _risk(score: float) -> str:
+    return "High" if score >= 0.8 else ("Medium" if score >= 0.5 else "Low")
 
 
 def detect(db: Session) -> dict:
     scores = dict(db.query(Account.account_uid, Account.fraud_score).all())
     names = dict(db.query(Account.account_uid, Account.customer_name).all())
     truth = dict(db.query(Account.account_uid, Account.is_fraud).all())
+    rule_levels = dict(db.query(Account.account_uid, Account.risk_level).all())
 
     # 1) suspicious-activity subgraph
     G = nx.DiGraph()
@@ -107,8 +117,9 @@ def detect(db: Session) -> dict:
 
         member_scores = [scores.get(u, 0.0) or 0.0 for u in comp]
         avg_score = sum(member_scores) / len(member_scores)
+        rule_score = sum(RULE_LEVEL_WEIGHT.get(rule_levels.get(u), 0.0) for u in comp) / len(comp)
         total_flow = sum(d["amount"] for _, _, d in sub.edges(data=True))
-        risk = "High" if avg_score >= 0.8 else ("Medium" if avg_score >= 0.5 else "Low")
+        risk = _risk(max(avg_score, rule_score))
         fraud_members = sum(1 for u in comp if truth.get(u))
 
         members = sorted(comp, key=lambda u: received[u], reverse=True)[:MAX_RING_MEMBERS_SHOWN]
@@ -120,6 +131,7 @@ def detect(db: Session) -> dict:
             "withdrawal_account": withdrawal,
             "total_flow": round(total_flow, 2),
             "avg_fraud_score": round(avg_score, 4),
+            "rule_score": round(rule_score, 4),
             "risk": risk,
             "ground_truth_fraud_members": fraud_members,
             "nodes": [
@@ -136,7 +148,7 @@ def detect(db: Session) -> dict:
             ],
         })
 
-    rings.sort(key=lambda r: (r["avg_fraud_score"], r["total_flow"]), reverse=True)
+    rings.sort(key=lambda r: (max(r["avg_fraud_score"], r["rule_score"]), r["total_flow"]), reverse=True)
     summary = {
         "rings_found": len(rings),
         "accounts_involved": sum(r["size"] for r in rings),

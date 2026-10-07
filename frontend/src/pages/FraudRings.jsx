@@ -96,7 +96,8 @@ export default function FraudRings() {
                       <TableCell align="right">Size</TableCell>
                       <TableCell>Main account</TableCell>
                       <TableCell align="right">Money flow</TableCell>
-                      <TableCell align="right">Avg score</TableCell>
+                      <TableCell align="right">ML score</TableCell>
+                      <TableCell align="right">Rule score</TableCell>
                       <TableCell>Risk</TableCell>
                       <TableCell />
                     </TableRow>
@@ -109,6 +110,9 @@ export default function FraudRings() {
                         <TableCell sx={{ fontFamily: 'monospace' }}>{r.main_account}</TableCell>
                         <TableCell align="right">{money(r.total_flow)}</TableCell>
                         <TableCell align="right">{(r.avg_fraud_score * 100).toFixed(0)}%</TableCell>
+                        <TableCell align="right">
+                          {r.rule_score == null ? '—' : `${(r.rule_score * 100).toFixed(0)}%`}
+                        </TableCell>
                         <TableCell><RiskChip level={r.risk} /></TableCell>
                         <TableCell align="right">
                           <Button size="small" startIcon={<GroupsIcon />} onClick={() => openRing(r.ring_id)}>
@@ -123,6 +127,10 @@ export default function FraudRings() {
                   component="div" count={rings.length} page={page} rowsPerPage={10}
                   rowsPerPageOptions={[10]} onPageChange={(e, p) => setPage(p)}
                 />
+                <Typography variant="caption" color="text.secondary">
+                  Risk uses the stronger signal: the members' average ML score, or the rule score
+                  (members flagged by 2+ rules count fully, by 1 rule half).
+                </Typography>
               </Paper>
             </Grid>
 

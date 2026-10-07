@@ -277,7 +277,8 @@ def report(db, rings: dict) -> None:
     for ring in demo_rings.values():
         print(f"  {ring['ring_id']}: {ring['size']} accounts, main {ring['main_account']}, "
               f"withdrawal {ring['withdrawal_account'] or '-'}, Rs {ring['total_flow']:,.0f} moved, "
-              f"risk {ring['risk']} (avg ML score {ring['avg_fraud_score']:.2f})")
+              f"risk {ring['risk']} (ML score {ring['avg_fraud_score']:.2f}, "
+              f"rule score {ring['rule_score']:.2f})")
 
 
 def main():
