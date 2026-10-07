@@ -2,10 +2,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.database import Base, engine
+from app import models  # noqa: F401  (registers all tables on Base.metadata)
 from app.api import (
     auth, accounts, transactions, preprocessing, rules, graph, features,
     ml, gnn, alerts, rings, cases, dashboard, reports,
 )
+
+# Adds any table introduced since the database was first set up (e.g. rule_hits);
+# existing tables are left untouched.
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Financial Fraud Detection with Graph ML")
 

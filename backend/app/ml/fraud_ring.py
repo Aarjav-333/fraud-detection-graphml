@@ -12,9 +12,11 @@ Method:
         withdrawal - receives from the main account and sends little onwards
         source     - everyone else (feeding money in)
   4. Score each ring on two signals: the members' average ML fraud score, and a
-     rule score from the rule engine's per-account risk levels. Risk uses the
-     stronger of the two, so a ring the rules caught is not rated Low just
-     because the ML model has not seen that pattern before.
+     rule score - how many different rules (R1-R6) fired on the ring's own
+     transactions (1 rule = 0.33, 2 = 0.67, 3+ = 1.0). Risk uses the stronger
+     of the two, so a ring the rules caught several ways is not rated Low just
+     because the ML model has not seen the pattern, while one rule alone is not
+     enough to lift a ring to Medium.
 
 Results are cached to saved_models/rings.json for the UI.
 """
@@ -25,8 +27,11 @@ from collections import defaultdict
 import networkx as nx
 from sqlalchemy.orm import Session
 
+from app.ml.alerts import score_to_risk
+from app.ml.rules import RULE_CODES
 from app.models.transaction import Transaction
 from app.models.account import Account
+from app.models.rule_hit import RuleHit
 
 SAVED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_models")
 RINGS_JSON = os.path.join(SAVED_DIR, "rings.json")
@@ -34,31 +39,35 @@ RINGS_JSON = os.path.join(SAVED_DIR, "rings.json")
 MIN_RING_SIZE = 4
 ML_SCORE_FLOOR = 0.7      # accounts above this join the suspicious subgraph
 MAX_RING_MEMBERS_SHOWN = 40
-# Account.risk_level as set by rules.apply_rules: High = hit by 2+ rules, Medium = 1 rule
-RULE_LEVEL_WEIGHT = {"High": 1.0, "Medium": 0.5}
+RULES_FOR_FULL_SCORE = 3  # distinct rules on a ring's own transactions for rule score 1.0
+DETAIL_KEYS = ("nodes", "links", "member_ids")
 
 
-def _risk(score: float) -> str:
-    return "High" if score >= 0.8 else ("Medium" if score >= 0.5 else "Low")
+def _add_edge(G: nx.DiGraph, sender: str, receiver: str, amount: float) -> None:
+    if G.has_edge(sender, receiver):
+        G[sender][receiver]["amount"] += amount
+        G[sender][receiver]["count"] += 1
+    else:
+        G.add_edge(sender, receiver, amount=float(amount), count=1, rules=set())
 
 
 def detect(db: Session) -> dict:
-    scores = dict(db.query(Account.account_uid, Account.fraud_score).all())
-    names = dict(db.query(Account.account_uid, Account.customer_name).all())
-    truth = dict(db.query(Account.account_uid, Account.is_fraud).all())
-    rule_levels = dict(db.query(Account.account_uid, Account.risk_level).all())
+    scores, names, truth = {}, {}, {}
+    for uid, score, name, is_fraud in db.query(
+            Account.account_uid, Account.fraud_score, Account.customer_name, Account.is_fraud):
+        scores[uid], names[uid], truth[uid] = score, name, is_fraud
+    rules_by_txn = defaultdict(set)
+    for txn_uid, rule in db.query(RuleHit.txn_uid, RuleHit.rule):
+        rules_by_txn[txn_uid].add(rule)
 
-    # 1) suspicious-activity subgraph
+    # 1) suspicious-activity subgraph; each edge remembers which rules fired on it
     G = nx.DiGraph()
     sus_txns = db.query(
-        Transaction.sender_uid, Transaction.receiver_uid, Transaction.amount,
+        Transaction.txn_uid, Transaction.sender_uid, Transaction.receiver_uid, Transaction.amount,
     ).filter(Transaction.status == "suspicious").all()
-    for s, r, amt in sus_txns:
-        if G.has_edge(s, r):
-            G[s][r]["amount"] += amt
-            G[s][r]["count"] += 1
-        else:
-            G.add_edge(s, r, amount=float(amt), count=1)
+    for txn_uid, s, r, amt in sus_txns:
+        _add_edge(G, s, r, amt)
+        G[s][r]["rules"] |= rules_by_txn.get(txn_uid, set())
 
     # connect high-ML-score accounts through their transactions with each other
     hot = {uid for uid, sc in scores.items() if (sc or 0) >= ML_SCORE_FLOOR}
@@ -68,11 +77,7 @@ def detect(db: Session) -> dict:
         ).filter(Transaction.sender_uid.in_(hot),
                  Transaction.receiver_uid.in_(hot)).all()
         for s, r, amt in hot_txns:
-            if G.has_edge(s, r):
-                G[s][r]["amount"] += amt
-                G[s][r]["count"] += 1
-            else:
-                G.add_edge(s, r, amount=float(amt), count=1)
+            _add_edge(G, s, r, amt)
 
     # 2) connected groups; split oversized components into communities so
     #    distinct rings inside one big suspicious blob separate out
@@ -117,9 +122,10 @@ def detect(db: Session) -> dict:
 
         member_scores = [scores.get(u, 0.0) or 0.0 for u in comp]
         avg_score = sum(member_scores) / len(member_scores)
-        rule_score = sum(RULE_LEVEL_WEIGHT.get(rule_levels.get(u), 0.0) for u in comp) / len(comp)
+        ring_rules = set().union(*(d["rules"] for _, _, d in sub.edges(data=True)))
+        rule_score = min(len(ring_rules), RULES_FOR_FULL_SCORE) / RULES_FOR_FULL_SCORE
+        risk_score = max(avg_score, rule_score)
         total_flow = sum(d["amount"] for _, _, d in sub.edges(data=True))
-        risk = _risk(max(avg_score, rule_score))
         fraud_members = sum(1 for u in comp if truth.get(u))
 
         members = sorted(comp, key=lambda u: received[u], reverse=True)[:MAX_RING_MEMBERS_SHOWN]
@@ -131,9 +137,12 @@ def detect(db: Session) -> dict:
             "withdrawal_account": withdrawal,
             "total_flow": round(total_flow, 2),
             "avg_fraud_score": round(avg_score, 4),
+            "rules": sorted(RULE_CODES[r] for r in ring_rules),
             "rule_score": round(rule_score, 4),
-            "risk": risk,
+            "risk_score": round(risk_score, 4),
+            "risk": score_to_risk(risk_score),
             "ground_truth_fraud_members": fraud_members,
+            "member_ids": sorted(comp),     # full membership; "nodes" is capped for display
             "nodes": [
                 {"id": u, "name": names.get(u, u), "role": roles[u],
                  "fraud_score": round(scores.get(u, 0.0) or 0.0, 3),
@@ -148,7 +157,7 @@ def detect(db: Session) -> dict:
             ],
         })
 
-    rings.sort(key=lambda r: (max(r["avg_fraud_score"], r["rule_score"]), r["total_flow"]), reverse=True)
+    rings.sort(key=lambda r: (r["risk_score"], r["total_flow"]), reverse=True)
     summary = {
         "rings_found": len(rings),
         "accounts_involved": sum(r["size"] for r in rings),
@@ -160,6 +169,11 @@ def detect(db: Session) -> dict:
     with open(RINGS_JSON, "w") as fh:
         json.dump(summary, fh)
     return summary
+
+
+def ring_summary(ring: dict) -> dict:
+    """A ring without its per-member detail, for list views."""
+    return {k: v for k, v in ring.items() if k not in DETAIL_KEYS}
 
 
 def load_rings() -> dict | None:

@@ -29,7 +29,7 @@ def _next_alert_num(db: Session) -> int:
     return 1
 
 
-def _score_to_risk(score: float) -> str:
+def score_to_risk(score: float) -> str:
     if score >= 0.8:
         return "High"
     if score >= 0.5:
@@ -60,7 +60,7 @@ def generate(db: Session, ml_threshold: float = 0.8) -> dict:
             account_uid=t.receiver_uid,   # money destination is the natural suspect
             reason="Rule engine: transaction matched suspicious pattern",
             fraud_score=round(float(score), 4),
-            risk_level=_score_to_risk(score),
+            risk_level=score_to_risk(score),
             status="Pending",
             created_at=datetime.utcnow(),
         ))
@@ -81,7 +81,7 @@ def generate(db: Session, ml_threshold: float = 0.8) -> dict:
             account_uid=a.account_uid,
             reason=f"ML model: account fraud score {a.fraud_score:.2f} >= {ml_threshold:.2f}",
             fraud_score=round(float(a.fraud_score), 4),
-            risk_level=_score_to_risk(a.fraud_score),
+            risk_level=score_to_risk(a.fraud_score),
             status="Pending",
             created_at=datetime.utcnow(),
         ))

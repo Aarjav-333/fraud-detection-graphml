@@ -183,11 +183,11 @@ def summary_pdf(db: Session = Depends(get_db)):
             f"<b>{rings['accounts_involved']:,}</b> accounts; total suspicious flow "
             f"Rs {rings['total_flow']:,.0f}. High-risk rings: {rings['high_risk_rings']}.", body))
         top = rings["rings"][:5]
-        rows = [["Ring", "Size", "Main account", "Money flow", "ML score", "Rule score", "Risk"]]
+        rows = [["Ring", "Size", "Main account", "Money flow", "ML score", "Rules fired", "Risk"]]
         for r in top:
-            rule_score = f"{r['rule_score']:.2f}" if "rule_score" in r else "-"  # rings.json from before rule scores
+            rules_fired = " ".join(r["rules"]) if "rules" in r else "-"  # rings.json from before rule tracking
             rows.append([r["ring_id"], str(r["size"]), r["main_account"],
-                         f"Rs {r['total_flow']:,.0f}", f"{r['avg_fraud_score']:.2f}", rule_score, r["risk"]])
+                         f"Rs {r['total_flow']:,.0f}", f"{r['avg_fraud_score']:.2f}", rules_fired or "none", r["risk"]])
         story.append(stat_table(rows))
     else:
         story.append(Paragraph("Ring detection not run yet.", body))

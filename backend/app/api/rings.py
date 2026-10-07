@@ -10,10 +10,7 @@ router = APIRouter(prefix="/api/rings", tags=["rings"], dependencies=[Depends(ge
 @router.post("/detect")
 def detect(db: Session = Depends(get_db)):
     return {k: v for k, v in fraud_ring.detect(db).items() if k != "rings"} | {
-        "rings": [
-            {k: v for k, v in r.items() if k not in ("nodes", "links")}
-            for r in fraud_ring.load_rings()["rings"]
-        ]
+        "rings": [fraud_ring.ring_summary(r) for r in fraud_ring.load_rings()["rings"]]
     }
 
 
@@ -27,10 +24,7 @@ def status():
             "accounts_involved": data["accounts_involved"],
             "total_flow": data["total_flow"],
             "high_risk_rings": data["high_risk_rings"],
-            "rings": [
-                {k: v for k, v in r.items() if k not in ("nodes", "links")}
-                for r in data["rings"]
-            ]}
+            "rings": [fraud_ring.ring_summary(r) for r in data["rings"]]}
 
 
 @router.get("/{ring_id}")

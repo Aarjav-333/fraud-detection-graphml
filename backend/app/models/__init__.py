@@ -4,5 +4,6 @@ from app.models.transaction import Transaction
 from app.models.alert import Alert
 from app.models.case import Case
 from app.models.graph_metric import GraphMetric
+from app.models.rule_hit import RuleHit
 
-__all__ = ["User", "Account", "Transaction", "Alert", "Case", "GraphMetric"]
+__all__ = ["User", "Account", "Transaction", "Alert", "Case", "GraphMetric", "RuleHit"]

@@ -10,6 +10,7 @@ Rules:
 
 Running the engine:
   - marks matched transactions status='suspicious'
+  - records which rule flagged which transaction in the rule_hits table
   - raises involved accounts' risk_level (Medium, High if hit by 2+ rules)
 """
 from collections import Counter, defaultdict
@@ -21,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.models.transaction import Transaction
 from app.models.account import Account
+from app.models.rule_hit import RuleHit
 
 LARGE_AMOUNT = 100_000
 RAPID_COUNT = 5
@@ -39,6 +41,7 @@ RULE_LABELS = {
     "fan_out": "R5 · One account → many receivers",
     "circular": "R6 · Circular transfers",
 }
+RULE_CODES = {name: label.split(" ")[0] for name, label in RULE_LABELS.items()}  # "fan_in" -> "R4"
 
 
 def _load(db: Session):
@@ -159,6 +162,12 @@ def apply_rules(db: Session) -> dict:
     for i in range(0, len(flagged_list), 500):
         db.query(Transaction).filter(Transaction.txn_uid.in_(flagged_list[i:i + 500])).update(
             {"status": "suspicious"}, synchronize_session=False)
+
+    # per-transaction evidence, so later steps can tell which rules fired where
+    db.query(RuleHit).delete(synchronize_session=False)
+    db.bulk_insert_mappings(RuleHit, [
+        {"txn_uid": uid, "rule": rule} for rule, uids in hits.items() for uid in uids
+    ])
 
     # account involvement: count how many rules touched each account
     uid_to_row = txns.set_index("txn_uid")[["sender_uid", "receiver_uid"]]

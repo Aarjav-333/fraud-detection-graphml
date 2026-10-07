@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import {
   Box, Typography, Paper, Grid, Button, Stack, Chip, Alert, LinearProgress,
-  Table, TableHead, TableBody, TableRow, TableCell, TablePagination,
+  Table, TableContainer, TableHead, TableBody, TableRow, TableCell, TablePagination,
 } from '@mui/material'
 import GroupsIcon from '@mui/icons-material/Groups'
 import RadarIcon from '@mui/icons-material/Radar'
@@ -89,6 +89,7 @@ export default function FraudRings() {
             <Grid item xs={12} lg={selected ? 5 : 12}>
               <Paper sx={{ p: 2 }}>
                 <Typography variant="h6" sx={{ mb: 1 }}>Detected rings</Typography>
+                <TableContainer>
                 <Table size="small">
                   <TableHead>
                     <TableRow>
@@ -97,7 +98,7 @@ export default function FraudRings() {
                       <TableCell>Main account</TableCell>
                       <TableCell align="right">Money flow</TableCell>
                       <TableCell align="right">ML score</TableCell>
-                      <TableCell align="right">Rule score</TableCell>
+                      <TableCell>Rules fired</TableCell>
                       <TableCell>Risk</TableCell>
                       <TableCell />
                     </TableRow>
@@ -110,8 +111,8 @@ export default function FraudRings() {
                         <TableCell sx={{ fontFamily: 'monospace' }}>{r.main_account}</TableCell>
                         <TableCell align="right">{money(r.total_flow)}</TableCell>
                         <TableCell align="right">{(r.avg_fraud_score * 100).toFixed(0)}%</TableCell>
-                        <TableCell align="right">
-                          {r.rule_score == null ? '—' : `${(r.rule_score * 100).toFixed(0)}%`}
+                        <TableCell sx={{ whiteSpace: 'nowrap' }}>
+                          {r.rules == null ? '—' : (r.rules.join(' ') || 'none')}
                         </TableCell>
                         <TableCell><RiskChip level={r.risk} /></TableCell>
                         <TableCell align="right">
@@ -123,13 +124,14 @@ export default function FraudRings() {
                     ))}
                   </TableBody>
                 </Table>
+                </TableContainer>
                 <TablePagination
                   component="div" count={rings.length} page={page} rowsPerPage={10}
                   rowsPerPageOptions={[10]} onPageChange={(e, p) => setPage(p)}
                 />
                 <Typography variant="caption" color="text.secondary">
-                  Risk uses the stronger signal: the members' average ML score, or the rule score
-                  (members flagged by 2+ rules count fully, by 1 rule half).
+                  Risk uses the stronger signal: the members' average ML score, or how many different
+                  rules fired on the ring's own transactions (1 rule Low, 2 Medium, 3+ High).
                 </Typography>
               </Paper>
             </Grid>
