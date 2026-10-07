@@ -72,4 +72,15 @@ npm run dev                     # runs on http://localhost:5173
 Open http://localhost:5173, log in with **admin / admin123**.
 Keep BOTH the backend and frontend running at the same time.
 
+## Demo scenario
+A scripted mule-network laundering operation (feeders -> new mule account ->
+collector -> shell-company loop -> structured cash-out) for live demos. All its
+ids start with `DEMO-`, and the story triggers every rule R1-R6.
+```bash
+cd backend
+python -m scripts.demo_scenario               # plant it, run the whole pipeline, print what caught each stage
+python -m scripts.demo_scenario --plant-only  # plant it, then click through the pipeline in the UI
+python -m scripts.demo_scenario --cleanup     # remove all demo data
+```
+
 See DEPLOYMENT.md for deploying to Render (backend) + Vercel (frontend).
