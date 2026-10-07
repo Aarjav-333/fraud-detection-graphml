@@ -80,7 +80,10 @@ ids start with `DEMO-`, and the story triggers every rule R1-R6.
 cd backend
 python -m scripts.demo_scenario               # plant it, run the whole pipeline, print what caught each stage
 python -m scripts.demo_scenario --plant-only  # plant it, then click through the pipeline in the UI
-python -m scripts.demo_scenario --cleanup     # remove all demo data
+python -m scripts.demo_scenario --cleanup     # restore everything to how it was before planting
 ```
+Planting first snapshots the SQLite database, `saved_models/` and `features.csv`
+(into `backend/data/demo_snapshot/`), and `--cleanup` restores that snapshot exactly,
+so anything else you changed after planting is rolled back too.
 
 See DEPLOYMENT.md for deploying to Render (backend) + Vercel (frontend).

@@ -25,25 +25,26 @@ figure counts the demo transactions as false positives.
 Run from the backend/ folder, after init_db + seed_data:
     python -m scripts.demo_scenario               # plant + run pipeline + report
     python -m scripts.demo_scenario --plant-only  # plant, then click through the UI
-    python -m scripts.demo_scenario --cleanup     # remove the demo again
+    python -m scripts.demo_scenario --cleanup     # put everything back
 
-The pipeline steps are the same ones the UI runs, in the sidebar's order, so they
-refresh scores, alerts and rings for the whole dataset - and retraining with the
-demo present can raise alerts on real accounts too. Re-planting and --cleanup
-therefore remove, besides all demo data, every alert raised since the demo was
-planted that nobody has worked on yet (still Pending, no case). --cleanup then
-re-runs every step except alert generation, so scores, features and rings no
-longer include the demo.
+Planting first snapshots the SQLite database, saved_models/ and features.csv
+into data/demo_snapshot/. --cleanup restores that snapshot exactly - scores,
+alerts, rings and GNN results included - so anything else changed after
+planting is rolled back too. Re-planting restores the snapshot before planting
+again. Without a snapshot (e.g. planted by an older version of this script),
+--cleanup can only delete the DEMO- rows; re-run the pipeline afterwards.
 """
 import argparse
 import json
 import os
 import random
+import shutil
+import sqlite3
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, or_, select
 
 from app.database import Base, SessionLocal, engine
 from app import models  # noqa: F401  (registers tables)
@@ -62,7 +63,13 @@ BASE = datetime(2024, 11, 14, 1, 30)   # a night inside the synthetic data's 202
 ML_ALERT_THRESHOLD = 0.8               # same default as the Fraud Alerts page
 YEAR_START, YEAR_END = datetime(2024, 1, 1), datetime(2024, 12, 31, 23, 59)
 QUIET_BEFORE, QUIET_AFTER = timedelta(days=1), timedelta(days=2)  # no background txns near the scenario
-STATE_JSON = os.path.join(fraud_ring.SAVED_DIR, "demo_state.json")  # gitignored, like rings.json
+
+BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SNAPSHOT_DIR = os.path.join(BACKEND_DIR, "data", "demo_snapshot")   # gitignored
+SNAPSHOT_DB = os.path.join(SNAPSHOT_DIR, "database.sqlite")
+SNAPSHOT_MODELS = os.path.join(SNAPSHOT_DIR, "saved_models")
+SNAPSHOT_FEATURES = os.path.join(SNAPSHOT_DIR, "features.csv")
+SNAPSHOT_META = os.path.join(SNAPSHOT_DIR, "snapshot.json")         # written last: marks it complete
 
 FEEDERS = [f"{PREFIX}FEED{i:02d}" for i in range(1, 10)]
 MULE = f"{PREFIX}MULE"
@@ -88,22 +95,23 @@ NAMES = [
 ]
 STAGES = ["1 Collection", "2 Consolidation", "3 Layering", "4 Cash-out"]
 
-# ASCII labels so the report prints on any Windows console or pipe
-RULE_SHORT = {
-    "large_amount": "R1 large amount",
-    "rapid_transactions": "R2 rapid",
-    "new_account_large": "R3 new account",
-    "fan_in": "R4 fan-in",
-    "fan_out": "R5 fan-out",
-    "circular": "R6 circular",
+# ASCII rule names (the app's RULE_LABELS use symbols some Windows consoles can't print)
+RULE_NAMES = {
+    "large_amount": "large amount", "rapid_transactions": "rapid", "new_account_large": "new account",
+    "fan_in": "fan-in", "fan_out": "fan-out", "circular": "circular",
 }
+RULE_LABEL = {rules_engine.RULE_CODES[r]: f"{rules_engine.RULE_CODES[r]} {name}"
+              for r, name in RULE_NAMES.items()}                              # "R4" -> "R4 fan-in"
 
 
 def _is_demo(column):
-    # A case-sensitive prefix match. Not LIKE 'DEMO-%': SQLite's LIKE ignores
-    # case, so it would also match (and delete) a real account named "demo-...".
-    return func.substr(column, 1, len(PREFIX)) == PREFIX
+    # Case-sensitive prefix match that can still use the uid indexes. Not
+    # LIKE 'DEMO-%': SQLite's LIKE ignores case, so it would also match (and
+    # delete) a real account named "demo-...". '.' is the character after '-'.
+    return and_(column >= PREFIX, column < PREFIX[:-1] + ".")
 
+
+# --------------------------------------------------------------- scenario data
 
 def _accounts() -> list[dict]:
     created = {u: BASE - timedelta(days=300 + 37 * i) for i, u in enumerate(FEEDERS)}
@@ -156,9 +164,9 @@ def _transactions() -> list[tuple[str, dict]]:
 def _random_time(rng: random.Random, start: datetime) -> datetime | None:
     """A random time between start and the end of 2024, away from the scenario."""
     span = (YEAR_END - start).total_seconds()
+    if span <= 0:
+        return None
     for _ in range(100):
-        if span <= 0:
-            break
         ts = start + timedelta(seconds=rng.uniform(0, span))
         if not BASE - QUIET_BEFORE <= ts <= BASE + QUIET_AFTER:
             return ts
@@ -189,47 +197,93 @@ def _background(accounts: list[dict], real_created: dict[str, datetime]) -> list
     return rows
 
 
-def _load_state() -> dict | None:
-    if os.path.exists(STATE_JSON):
-        with open(STATE_JSON) as fh:
-            return json.load(fh)
-    return None
+# ------------------------------------------------------------ snapshot/restore
+
+def _database_file() -> str:
+    if engine.url.get_backend_name() != "sqlite":
+        raise SystemExit("The demo snapshots the database file, so it only supports SQLite "
+                         f"(DATABASE_URL is {engine.url.get_backend_name()}).")
+    return os.path.normcase(os.path.abspath(engine.url.database))
 
 
-def _save_state(db) -> None:
-    os.makedirs(os.path.dirname(STATE_JSON), exist_ok=True)
-    with open(STATE_JSON, "w") as fh:
-        json.dump({"planted_at": datetime.now().isoformat(timespec="seconds"),
-                   "max_alert_id": db.query(func.max(Alert.id)).scalar() or 0}, fh)
+def _sqlite_copy(src_path: str, dst_path: str) -> None:
+    """Page-level copy with SQLite's backup API: safe while the dev server has
+    the database open, and an interrupted copy leaves the destination unchanged.
+    Callers must close their Session first - the copy waits on any open lock."""
+    engine.dispose()   # release this script's own pooled connections first
+    src, dst = sqlite3.connect(src_path), sqlite3.connect(dst_path)
+    try:
+        src.backup(dst)
+    finally:
+        src.close()
+        dst.close()
 
 
-def remove_demo_data(db) -> dict:
-    """Delete demo accounts and everything that references them, plus alerts
-    raised since the demo was planted that nobody has worked on yet."""
-    # The state file is only trusted while the demo is actually planted in this
-    # database; after a re-seed its alert ids would point at unrelated alerts.
-    state = _load_state() if db.query(Account.id).filter(_is_demo(Account.account_uid)).first() else None
+def _load_snapshot() -> dict | None:
+    """The snapshot's metadata, or None if there is no complete, readable snapshot."""
+    try:
+        with open(SNAPSHOT_META) as fh:
+            meta = json.load(fh)
+        return meta if {"database", "taken_at"} <= meta.keys() else None
+    except (OSError, ValueError):
+        return None
+
+
+def _take_snapshot() -> None:
+    shutil.rmtree(SNAPSHOT_DIR, ignore_errors=True)        # drop any incomplete leftovers
+    os.makedirs(SNAPSHOT_MODELS)
+    _sqlite_copy(_database_file(), SNAPSHOT_DB)
+    if os.path.isdir(fraud_ring.SAVED_DIR):
+        for name in os.listdir(fraud_ring.SAVED_DIR):
+            path = os.path.join(fraud_ring.SAVED_DIR, name)
+            if os.path.isfile(path):
+                shutil.copy2(path, SNAPSHOT_MODELS)
+    has_features = os.path.exists(features.FEATURES_CSV)
+    if has_features:
+        shutil.copy2(features.FEATURES_CSV, SNAPSHOT_FEATURES)
+    meta = {"database": _database_file(), "taken_at": datetime.now().isoformat(timespec="seconds"),
+            "has_features": has_features}
+    with open(SNAPSHOT_META + ".tmp", "w") as fh:
+        json.dump(meta, fh)
+    os.replace(SNAPSHOT_META + ".tmp", SNAPSHOT_META)   # atomic: the snapshot now counts as complete
+
+
+def _restore_snapshot(meta: dict) -> None:
+    """Put the pipeline outputs, then the database, back exactly as snapshotted.
+    The database goes last: until it is restored the demo still shows as planted,
+    so an interrupted restore is simply repeated on the next run."""
+    os.makedirs(fraud_ring.SAVED_DIR, exist_ok=True)
+    for name in os.listdir(fraud_ring.SAVED_DIR):
+        path = os.path.join(fraud_ring.SAVED_DIR, name)
+        if os.path.isfile(path):
+            os.remove(path)
+    for name in os.listdir(SNAPSHOT_MODELS):
+        shutil.copy2(os.path.join(SNAPSHOT_MODELS, name), fraud_ring.SAVED_DIR)
+    if meta.get("has_features"):
+        shutil.copy2(SNAPSHOT_FEATURES, features.FEATURES_CSV)
+    elif os.path.exists(features.FEATURES_CSV):
+        os.remove(features.FEATURES_CSV)
+    _sqlite_copy(SNAPSHOT_DB, _database_file())
+
+
+def _demo_planted(db) -> bool:
+    return db.query(Account.id).filter(_is_demo(Account.account_uid)).first() is not None
+
+
+def remove_demo_rows(db) -> dict:
+    """Fallback when there is no snapshot: delete demo accounts and every row
+    that references them. Scores, features and rings keep the demo's influence
+    until the pipeline is re-run."""
     demo_alert = or_(_is_demo(Alert.account_uid), _is_demo(Alert.transaction_uid))
-    demo_alert_uids = select(Alert.alert_uid).where(demo_alert)
     touches_demo = or_(_is_demo(Transaction.txn_uid), _is_demo(Transaction.sender_uid),
                        _is_demo(Transaction.receiver_uid))
     removed = {
         # cases on demo accounts, or on an alert about a demo transaction (which
         # can name a real account) - deleting the alert alone would orphan the case
-        "cases": db.query(Case).filter(or_(_is_demo(Case.account_uid), Case.alert_uid.in_(demo_alert_uids)))
+        "cases": db.query(Case).filter(or_(_is_demo(Case.account_uid),
+                                           Case.alert_uid.in_(select(Alert.alert_uid).where(demo_alert))))
                    .delete(synchronize_session=False),
         "alerts": db.query(Alert).filter(demo_alert).delete(synchronize_session=False),
-    }
-
-    kept = 0
-    if state:
-        since_plant = Alert.id > state["max_alert_id"]
-        in_a_case = Alert.alert_uid.in_(select(Case.alert_uid).where(Case.alert_uid.isnot(None)))
-        removed["alerts"] += (db.query(Alert).filter(since_plant, Alert.status == "Pending", ~in_a_case)
-                                .delete(synchronize_session=False))
-        kept = db.query(Alert).filter(since_plant).count()
-
-    removed |= {
         "rule_hits": db.query(RuleHit)
                        .filter(RuleHit.txn_uid.in_(select(Transaction.txn_uid).where(touches_demo)))
                        .delete(synchronize_session=False),
@@ -239,28 +293,45 @@ def remove_demo_data(db) -> dict:
         "accounts": db.query(Account).filter(_is_demo(Account.account_uid)).delete(synchronize_session=False),
     }
     db.commit()
-    if os.path.exists(STATE_JSON):
-        os.remove(STATE_JSON)
-    if kept:
-        print(f"Kept {kept} alerts raised since the demo was planted: someone has worked on them.")
     return removed
 
 
+def _snapshot_for_this_database() -> dict | None:
+    """The snapshot, if it exists and was taken of the database in use."""
+    meta = _load_snapshot()
+    if meta and meta["database"] != _database_file():
+        raise SystemExit(f"{SNAPSHOT_DIR} holds a demo snapshot of a different database "
+                         f"({meta['database']}). Run --cleanup with that database first, "
+                         "or delete the folder if you no longer need it.")
+    return meta
+
+
+# ---------------------------------------------------------------- the commands
+
 def plant(db) -> None:
-    real_created = dict(db.query(Account.account_uid, Account.created_at)
-                          .filter(~_is_demo(Account.account_uid)))
-    if not real_created:
+    _database_file()   # fail early on non-SQLite
+    if not db.query(Account.id).filter(~_is_demo(Account.account_uid)).first():
         raise SystemExit("No base dataset found. Seed it first:\n"
                          "  python -m data.generate_synthetic\n  python -m scripts.seed_data")
-    removed = remove_demo_data(db)
-    if any(removed.values()):
-        print("Removed previous demo data: " + ", ".join(f"{n} {k}" for k, n in removed.items() if n))
+    snapshot = _snapshot_for_this_database()
+    planted = _demo_planted(db)
+    if planted and not snapshot:   # planted without a snapshot, e.g. by an older version
+        removed = remove_demo_rows(db)
+        print("Removed old demo rows: " + ", ".join(f"{n} {k}" for k, n in removed.items() if n))
+    db.close()   # end this session's transaction: the SQLite backup waits on any open lock
+    if snapshot and planted:
+        _restore_snapshot(snapshot)
+        print(f"Restored the pre-demo state from {snapshot['taken_at']} before planting again.")
+    else:
+        _take_snapshot()           # (a snapshot without a planted demo is stale: replace it)
+
+    real_created = dict(db.query(Account.account_uid, Account.created_at)
+                          .filter(~_is_demo(Account.account_uid)))
     accounts, txns = _accounts(), _transactions()
     background = _background(accounts, real_created)
     db.bulk_insert_mappings(Account, accounts)
     db.bulk_insert_mappings(Transaction, [row for _, row in txns] + background)
     db.commit()
-    _save_state(db)
     print(f"Planted {len(accounts)} accounts, {len(txns)} scenario transactions and "
           f"{len(background)} ordinary background transactions (ids start with {PREFIX}).")
     for stage in STAGES:
@@ -269,7 +340,26 @@ def plant(db) -> None:
         print(f"  {stage:16s} {len(stage_rows):2d} txns  Rs {total:>12,.0f}")
 
 
-def run_pipeline(db, generate_alerts: bool = True) -> dict:
+def cleanup(db) -> None:
+    snapshot = _snapshot_for_this_database()
+    planted = _demo_planted(db)
+    if snapshot and planted:
+        db.close()   # end this session's transaction: the SQLite backup waits on any open lock
+        _restore_snapshot(snapshot)
+        print(f"Restored the database, saved_models/ and features.csv to how they were at "
+              f"{snapshot['taken_at']}, when the demo was planted. Anything else changed since "
+              "then was rolled back too.")
+    elif planted:
+        removed = remove_demo_rows(db)
+        print("No snapshot found, so only the demo rows were removed: "
+              + ", ".join(f"{n} {k}" for k, n in removed.items()) + ".")
+        print("Scores, features and rings may still reflect the demo - re-run the pipeline from the UI.")
+    else:
+        print("The demo isn't planted in this database; nothing to remove.")
+    shutil.rmtree(SNAPSHOT_DIR, ignore_errors=True)
+
+
+def run_pipeline(db) -> dict:
     """Run the same steps as the UI, in the sidebar's order (GNN skipped)."""
     steps = [
         ("Rule Detection", rules_engine.apply_rules,
@@ -287,8 +377,6 @@ def run_pipeline(db, generate_alerts: bool = True) -> dict:
     ]
     results = {}
     for name, fn, describe in steps:
-        if name == "Fraud Alerts" and not generate_alerts:
-            continue
         start = time.perf_counter()
         results[name] = fn(db)
         print(f"  {name:15s} {time.perf_counter() - start:6.1f}s  {describe(results[name])}")
@@ -300,15 +388,15 @@ def report(db, rings: dict) -> None:
                     .filter(_is_demo(Transaction.txn_uid)))
     rule_hits = defaultdict(set)
     for txn_uid, rule in db.query(RuleHit.txn_uid, RuleHit.rule).filter(_is_demo(RuleHit.txn_uid)):
-        rule_hits[txn_uid].add(rule)
+        rule_hits[txn_uid].add(rules_engine.RULE_CODES[rule])
     stage_of = {row["txn_uid"]: stage for stage, row in _transactions()}
 
     print("\nRule engine - did each stage get caught?")
     for stage in STAGES:
         uids = [u for u, s in stage_of.items() if s == stage]
         flagged = sum(status.get(u) == "suspicious" for u in uids)
-        fired = Counter(rule for u in uids for rule in rule_hits[u])
-        rules_text = ", ".join(f"{RULE_SHORT[r]} x{n}" for r, n in sorted(fired.items())) or "none"
+        fired = Counter(code for u in uids for code in rule_hits[u])
+        rules_text = ", ".join(f"{RULE_LABEL[c]} x{n}" for c, n in sorted(fired.items())) or "none"
         print(f"  {stage:16s} flagged {flagged}/{len(uids)}   {rules_text}")
 
     accounts = (db.query(Account.account_uid, Account.risk_level, Account.fraud_score)
@@ -333,16 +421,9 @@ def report(db, rings: dict) -> None:
     for ring in demo_rings.values():
         print(f"  {ring['ring_id']}: {ring['size']} accounts, main {ring['main_account']}, "
               f"withdrawal {ring['withdrawal_account'] or '-'}, Rs {ring['total_flow']:,.0f} moved, "
-              f"risk {ring['risk']} (ML score {ring['avg_fraud_score']:.2f}, "
-              f"rules fired: {' '.join(ring['rules']) or 'none'})")
-
-
-def cleanup(db) -> None:
-    removed = remove_demo_data(db)
-    print("Removed " + ", ".join(f"{n} {k}" for k, n in removed.items()) + ".")
-    if os.path.exists(features.FEATURES_CSV) or os.path.exists(fraud_ring.RINGS_JSON):
-        print("\nRe-running the pipeline without the demo (alert generation skipped):")
-        run_pipeline(db, generate_alerts=False)
+              f"risk {ring['risk']} (ML score {ring['avg_fraud_score']:.2f})")
+        print(f"    rules fired on its transactions: "
+              f"{', '.join(RULE_LABEL[c] for c in ring['rules']) or 'none'}")
 
 
 def main():
@@ -351,7 +432,7 @@ def main():
     group.add_argument("--plant-only", action="store_true",
                        help="plant the scenario but leave the pipeline to the UI")
     group.add_argument("--cleanup", action="store_true",
-                       help="remove all demo data, then refresh scores, features and rings")
+                       help="restore the snapshot taken when the demo was planted")
     args = parser.parse_args()
 
     Base.metadata.create_all(bind=engine)
@@ -370,7 +451,7 @@ def main():
         results = run_pipeline(db)
         report(db, results["Fraud Rings"])
         print(f"\nIn the UI: search for {PREFIX} on Accounts / Alerts, or open the ring on Fraud Rings.")
-        print("Remove the demo again with: python -m scripts.demo_scenario --cleanup")
+        print("Put everything back with: python -m scripts.demo_scenario --cleanup")
     finally:
         db.close()
 
