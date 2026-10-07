@@ -10,6 +10,8 @@ services:
     startCommand: bash scripts/render_start.sh
     healthCheckPath: /
     envVars:
+      - key: APP_ENV
+        value: production    # backend refuses to boot with default SECRET_KEY/ADMIN_PASSWORD
       - key: SECRET_KEY
         generateValue: true
       - key: ADMIN_USERNAME

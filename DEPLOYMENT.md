@@ -3,20 +3,33 @@
 ## Backend on Render (free tier)
 
 1. Push this repo to GitHub (already done).
-2. Go to https://dashboard.render.com -> New -> Web Service.
-3. Connect your GitHub repo. Render will detect render.yaml -- click Apply.
-   (No blueprint auto-detected? Configure manually:
+2. Go to https://dashboard.render.com -> New -> Blueprint (not "Web Service" --
+   only the Blueprint flow reads render.yaml).
+3. Connect your GitHub repo. Render reads render.yaml and asks for the values
+   marked sync: false:
+     - ADMIN_PASSWORD = a real password (not admin123)
+   SECRET_KEY is generated for you and APP_ENV is set to production.
+   ALLOWED_ORIGINS starts as localhost -- you update it in "Connect them" below,
+   once the Vercel URL exists. Click Apply.
+4. Deploy. First boot seeds 5,000 accounts + 80,000 transactions automatically
+   (takes ~15-20s). Note your backend URL, e.g. https://fraud-detection-backend.onrender.com
+
+   Deploy failed with "Refusing to start in production with insecure settings"?
+   That's on purpose: SECRET_KEY or ADMIN_PASSWORD is missing or still a
+   placeholder, which would let anyone log in. Set it in the service's
+   Environment tab and redeploy.
+
+   Prefer to skip the Blueprint? New -> Web Service works too, but then you
+   must set every variable yourself:
      - Root directory: backend
      - Build command: pip install -r requirements.txt
      - Start command: bash scripts/render_start.sh
-     - Plan: Free)
-4. In the service's Environment tab, set:
-     - ADMIN_PASSWORD = a real password (not the default)
-     - SECRET_KEY = (Render auto-generates this via the blueprint)
-     - ALLOWED_ORIGINS = leave as localhost for now -- update after step 6
-5. Deploy. First boot seeds 5,000 accounts + 80,000 transactions automatically
-   (takes ~15-20s). Note your backend URL, e.g. https://fraud-detection-backend.onrender.com
-6. Free tier note: the service spins down after 15 min idle and cold-starts
+     - Plan: Free
+     - Environment: APP_ENV = production
+                    SECRET_KEY = output of: python -c "import secrets; print(secrets.token_urlsafe(48))"
+                    ADMIN_PASSWORD = a real password
+                    ALLOWED_ORIGINS = http://localhost:5173 (updated later)
+5. Free tier note: the service spins down after 15 min idle and cold-starts
    (~30-60s) on the next request -- normal for a demo, not for 24/7 uptime.
    Data also resets on redeploys/cold restarts; the start script reseeds
    automatically so the app is never left with an empty database.
@@ -29,11 +42,14 @@
 4. Add environment variable:
      - VITE_API_URL = your Render backend URL from above (no trailing slash)
 5. Deploy. Note your Vercel URL, e.g. https://fraud-detection-graphml.vercel.app
+   (frontend/vercel.json rewrites every path to index.html, so refreshing or
+   bookmarking a page like /rules works instead of returning a 404.)
 
 ## Connect them (CORS)
 
 1. Back in Render -> your backend service -> Environment:
-     - Set ALLOWED_ORIGINS = https://your-app.vercel.app (your real Vercel URL)
+     - Set ALLOWED_ORIGINS = https://your-app.vercel.app (your real Vercel URL;
+       a trailing slash is stripped automatically)
      - (Add ,http://localhost:5173 too if you still want local dev to work)
 2. Render redeploys automatically when you save the env var.
 
