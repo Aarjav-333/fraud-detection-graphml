@@ -71,7 +71,7 @@ Thumbs.db
 backend/data/elliptic/
 backend/app/ml/saved_models/*.joblib
 backend/app/ml/saved_models/*.json
-data/processed/features.csv
+backend/data/processed/features.csv
 data/raw/sample_messy.csv
 
 # Cache
