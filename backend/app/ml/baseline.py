@@ -21,7 +21,7 @@ from xgboost import XGBClassifier
 from sqlalchemy.orm import Session
 
 from app.ml.features import load_features
-from app.ml.outputs import load_json, output_path, save_json
+from app.ml.outputs import load_json, output_path, replacing, save_json
 from app.models.account import Account
 
 RESULTS_FILE = "baseline_results.json"
@@ -108,7 +108,8 @@ def train_and_score(db: Session, test_size: float = 0.25, seed: int = 42) -> dic
             acc.fraud_score = round(float(mapping[acc.account_uid]), 4)
     db.commit()
 
-    joblib.dump(best, output_path(f"{best_name}.joblib"))
+    with replacing(output_path(f"{best_name}.joblib")) as tmp:
+        joblib.dump(best, tmp)
 
     summary = {
         "train_size": int(len(y_train)), "test_size": int(len(y_test)),

@@ -1,7 +1,7 @@
 """Plant the demo scenario into a copy and run the detection pipeline on it.
 
 The heavy half of scripts/demo_scenario.py, which describes the scenario and
-is what you run. Import it only after scripts.demo_common.point_app_at(BUILD_DIR):
+is what you run. Import it only after scripts.demo_common.point_app_at(DEMO_DIR):
 it uses the app's database engine, which must already point at the copy.
 """
 import random
@@ -20,7 +20,7 @@ from app.models.account import Account
 from app.models.alert import Alert
 from app.models.rule_hit import RuleHit
 from app.models.transaction import Transaction
-from scripts.demo_common import BUILD_DIR, PREFIX, PREFIX_END, check_pointed_at
+from scripts.demo_common import DEMO_DIR, PREFIX, PREFIX_END, check_pointed_at
 
 BASE = datetime(2024, 11, 14, 1, 30)   # a night inside the synthetic data's 2024 range
 ML_ALERT_THRESHOLD = 0.8               # same default as the Fraud Alerts page
@@ -233,26 +233,15 @@ def report(db, rings: dict) -> None:
 
 
 def run(plant_only: bool) -> None:
-    """Plant into the copy being built and, unless plant_only, run the pipeline and report."""
-    check_pointed_at(BUILD_DIR, engine)   # never the real database or pipeline outputs
+    """Plant into the demo copy and, unless plant_only, run the pipeline and report."""
+    check_pointed_at(DEMO_DIR, engine)   # never the real database or pipeline outputs
     Base.metadata.create_all(bind=engine)   # the copy may predate newer tables
     db = SessionLocal()
     try:
         plant(db)
-        if plant_only:
-            print("\nNow stop your normal backend, start the demo one with\n"
-                  "  python -m scripts.demo_scenario --serve\nthen log in and run, in the "
-                  "sidebar's order: Rule Detection -> Graph Analysis -> Features -> ML Scoring "
-                  f"-> Fraud Alerts -> Fraud Rings.\nThen search for {PREFIX} on the Accounts, "
-                  "Alerts and Fraud Rings pages.")
-            return
-        print("\nRunning the detection pipeline on the copy:")
-        results = run_pipeline(db)
-        report(db, results["Fraud Rings"])
-        print("\nTo show it in the UI, stop your normal backend and run\n"
-              "  python -m scripts.demo_scenario --serve\n"
-              f"then search for {PREFIX} on Accounts / Alerts, or open the ring on Fraud Rings.")
-        print("Your own database and pipeline outputs were not changed. "
-              "Delete the copy with --cleanup.")
+        if not plant_only:
+            print("\nRunning the detection pipeline on the copy:")
+            results = run_pipeline(db)
+            report(db, results["Fraud Rings"])
     finally:
         db.close()

@@ -16,9 +16,8 @@ PREFIX = "DEMO-"
 # ignores case, so it would also match a real account named "demo-...".
 PREFIX_END = PREFIX[:-1] + chr(ord(PREFIX[-1]) + 1)   # "DEMO."
 
-DEMO_DIR = os.path.join(BACKEND_DIR, "data", "demo")        # the finished copy (gitignored)
-BUILD_DIR = os.path.join(BACKEND_DIR, "data", "demo.new")   # the copy being built (gitignored)
-OLD_DIR = os.path.join(BACKEND_DIR, "data", "demo.old")     # the previous copy, mid-swap (gitignored)
+DEMO_DIR = os.path.join(BACKEND_DIR, "data", "demo")   # the copy (gitignored)
+READY_FILE = os.path.join(DEMO_DIR, "ready.txt")       # written last, once the copy is finished
 DATABASE_NAME = "fraud_detection.db"
 
 

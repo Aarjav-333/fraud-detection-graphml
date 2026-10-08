@@ -15,6 +15,7 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from app.config import BACKEND_DIR, settings
+from app.ml.outputs import read_file, replacing
 from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.graph_metric import GraphMetric
@@ -113,7 +114,8 @@ def _shown_path(path: str) -> str:
 def build_and_save(db: Session) -> dict:
     df = build_features(db)
     os.makedirs(settings.processed_dir, exist_ok=True)
-    df.to_csv(settings.features_csv, index=False)
+    with replacing(settings.features_csv) as tmp:
+        df.to_csv(tmp, index=False)
     n_fraud = int(df["is_fraud"].sum())
     return {
         "accounts": int(len(df)),
@@ -129,7 +131,4 @@ def build_and_save(db: Session) -> dict:
 
 
 def load_features() -> pd.DataFrame | None:
-    try:
-        return pd.read_csv(settings.features_csv)
-    except FileNotFoundError:
-        return None
+    return read_file(settings.features_csv, pd.read_csv)

@@ -87,6 +87,7 @@ Your own data is never changed: the demo works on a copy of the SQLite database,
 `saved_models/` and `features.csv` in `backend/data/demo/`. `--serve` runs the backend
 on that copy at port 8000, so stop your normal backend first; the frontend needs no
 changes. While it runs, planting again and `--cleanup` refuse to start. Planting again
-builds a fresh copy of your current data and only replaces the old demo once it has worked.
+replaces the demo with a fresh copy of your current data; if that fails or is interrupted,
+`--serve` refuses the unfinished copy until you plant again.
 
 See DEPLOYMENT.md for deploying to Render (backend) + Vercel (frontend).
