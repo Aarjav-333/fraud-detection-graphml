@@ -30,8 +30,8 @@ class Settings(BaseSettings):
     # Where pipeline outputs go: saved_models/ (models, rings, results) and
     # processed/features.csv. Empty keeps them in their usual places
     # (app/ml/saved_models, data/processed); the demo scenario points it at
-    # its own copy so it never touches these.
-    OUTPUT_DIR: str = ""
+    # its own copy so it never touches these. Relative to backend/.
+    PIPELINE_OUTPUT_DIR: str = ""
 
     # hide_input_in_errors keeps secret values out of validation errors/logs.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
@@ -42,14 +42,14 @@ class Settings(BaseSettings):
 
     @property
     def saved_models_dir(self) -> str:
-        if self.OUTPUT_DIR:
-            return os.path.abspath(os.path.join(self.OUTPUT_DIR, "saved_models"))
+        if self.PIPELINE_OUTPUT_DIR:
+            return os.path.normpath(os.path.join(BACKEND_DIR, self.PIPELINE_OUTPUT_DIR, "saved_models"))
         return os.path.join(BACKEND_DIR, "app", "ml", "saved_models")
 
     @property
     def processed_dir(self) -> str:
-        if self.OUTPUT_DIR:
-            return os.path.abspath(os.path.join(self.OUTPUT_DIR, "processed"))
+        if self.PIPELINE_OUTPUT_DIR:
+            return os.path.normpath(os.path.join(BACKEND_DIR, self.PIPELINE_OUTPUT_DIR, "processed"))
         return os.path.join(BACKEND_DIR, "data", "processed")
 
     @property

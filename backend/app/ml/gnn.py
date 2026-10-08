@@ -20,16 +20,13 @@ import time
 import numpy as np
 from sqlalchemy.orm import Session
 
-from app.config import settings
+from app.config import BACKEND_DIR, settings
 from app.ml.features import load_features, FEATURES_CSV
 from app.models.transaction import Transaction
 
 SAVED_DIR = settings.saved_models_dir
 RESULTS_JSON = os.path.join(SAVED_DIR, "gnn_results.json")
-ELLIPTIC_ROOT = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "data", "elliptic",
-)
+ELLIPTIC_ROOT = os.path.join(BACKEND_DIR, "data", "elliptic")   # a shared download cache, not an output
 
 FEATURE_COLS = [
     "total_sent", "total_received", "txn_count_sent", "txn_count_received",

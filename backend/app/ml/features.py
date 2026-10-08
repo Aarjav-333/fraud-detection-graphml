@@ -5,7 +5,7 @@ Builds one feature row per account by combining:
   Graph features       : degree, centrality, PageRank, cycle membership, community size
 Label                  : is_fraud (ground truth from the synthetic data)
 
-The matrix is saved to data/processed/features.csv (OUTPUT_DIR in config can move it)
+The matrix is saved to data/processed/features.csv (PIPELINE_OUTPUT_DIR in config can move it)
 and reused by the ML models (Phase 9).
 """
 import os
@@ -14,7 +14,7 @@ from collections import defaultdict
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from app.config import settings
+from app.config import BACKEND_DIR, settings
 from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.graph_metric import GraphMetric
@@ -106,6 +106,13 @@ def build_features(db: Session) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
+def _shown_path(path: str) -> str:
+    try:
+        return os.path.relpath(path, BACKEND_DIR).replace(os.sep, "/")
+    except ValueError:   # on another drive (Windows)
+        return path
+
+
 def build_and_save(db: Session) -> dict:
     df = build_features(db)
     os.makedirs(PROCESSED_DIR, exist_ok=True)
@@ -117,7 +124,7 @@ def build_and_save(db: Session) -> dict:
         "fraud_accounts": n_fraud,
         "fraud_ratio": round(n_fraud / len(df), 4) if len(df) else 0.0,
         "graph_metrics_joined": bool(db.query(GraphMetric).count()),
-        "saved_to": "data/processed/features.csv",
+        "saved_to": _shown_path(FEATURES_CSV),
         "feature_list": [
             {"name": k, "description": v} for k, v in FEATURE_DESCRIPTIONS.items()
         ],
