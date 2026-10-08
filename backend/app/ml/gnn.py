@@ -24,6 +24,7 @@ from app.config import BACKEND_DIR, settings
 from app.ml.features import load_features
 from app.models.transaction import Transaction
 
+RESULTS_FILE = "gnn_results.json"
 ELLIPTIC_ROOT = os.path.join(BACKEND_DIR, "data", "elliptic")   # a shared download cache, not an output
 
 FEATURE_COLS = [
@@ -214,17 +215,14 @@ def train(db: Session, source: str = "synthetic", model_type: str = "graphsage",
     os.makedirs(settings.saved_models_dir, exist_ok=True)
     all_results = load_results() or {}
     all_results[f"{source}_{model_type}"] = summary
-    with open(_results_json(), "w") as fh:
+    with open(settings.saved_model_file(RESULTS_FILE), "w") as fh:
         json.dump(all_results, fh, indent=2)
     return summary
 
 
-def _results_json() -> str:
-    return os.path.join(settings.saved_models_dir, "gnn_results.json")
-
-
 def load_results() -> dict | None:
-    if os.path.exists(_results_json()):
-        with open(_results_json()) as fh:
+    try:
+        with open(settings.saved_model_file(RESULTS_FILE)) as fh:
             return json.load(fh)
-    return None
+    except FileNotFoundError:
+        return None

@@ -48,6 +48,9 @@ class Settings(BaseSettings):
             return os.path.normpath(os.path.join(BACKEND_DIR, self.PIPELINE_OUTPUT_DIR, "saved_models"))
         return os.path.join(BACKEND_DIR, "app", "ml", "saved_models")
 
+    def saved_model_file(self, name: str) -> str:
+        return os.path.join(self.saved_models_dir, name)
+
     @property
     def processed_dir(self) -> str:
         if self.PIPELINE_OUTPUT_DIR:

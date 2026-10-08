@@ -27,6 +27,8 @@ from app.config import settings
 from app.ml.features import load_features
 from app.models.account import Account
 
+RESULTS_FILE = "baseline_results.json"
+
 FEATURE_COLS = [
     "total_sent", "total_received", "txn_count_sent", "txn_count_received",
     "unique_receivers", "unique_senders", "avg_sent_amount", "avg_received_amount",
@@ -110,7 +112,7 @@ def train_and_score(db: Session, test_size: float = 0.25, seed: int = 42) -> dic
     db.commit()
 
     os.makedirs(settings.saved_models_dir, exist_ok=True)
-    joblib.dump(best, os.path.join(settings.saved_models_dir, f"{best_name}.joblib"))
+    joblib.dump(best, settings.saved_model_file(f"{best_name}.joblib"))
 
     summary = {
         "train_size": int(len(y_train)), "test_size": int(len(y_test)),
@@ -120,17 +122,14 @@ def train_and_score(db: Session, test_size: float = 0.25, seed: int = 42) -> dic
         "top_features": [{"feature": f, "importance": round(v, 4)} for f, v in top_features],
         "accounts_scored": int(len(df_scores)),
     }
-    with open(_results_json(), "w") as fh:
+    with open(settings.saved_model_file(RESULTS_FILE), "w") as fh:
         json.dump(summary, fh, indent=2)
     return summary
 
 
-def _results_json() -> str:
-    return os.path.join(settings.saved_models_dir, "baseline_results.json")
-
-
 def load_results() -> dict | None:
-    if os.path.exists(_results_json()):
-        with open(_results_json()) as fh:
+    try:
+        with open(settings.saved_model_file(RESULTS_FILE)) as fh:
             return json.load(fh)
-    return None
+    except FileNotFoundError:
+        return None
