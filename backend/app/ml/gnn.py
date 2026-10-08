@@ -14,14 +14,14 @@ the app works even when they are not installed. Install them with:
     pip install -r requirements-gnn.txt
 """
 import os
-import json
 import time
 
 import numpy as np
 from sqlalchemy.orm import Session
 
-from app.config import BACKEND_DIR, settings
+from app.config import BACKEND_DIR
 from app.ml.features import load_features
+from app.ml.outputs import load_json, save_json
 from app.models.transaction import Transaction
 
 RESULTS_FILE = "gnn_results.json"
@@ -212,17 +212,11 @@ def train(db: Session, source: str = "synthetic", model_type: str = "graphsage",
         "train_seconds": round(time.time() - t0, 1),
     }
 
-    os.makedirs(settings.saved_models_dir, exist_ok=True)
     all_results = load_results() or {}
     all_results[f"{source}_{model_type}"] = summary
-    with open(settings.saved_model_file(RESULTS_FILE), "w") as fh:
-        json.dump(all_results, fh, indent=2)
+    save_json(RESULTS_FILE, all_results, indent=2)
     return summary
 
 
 def load_results() -> dict | None:
-    try:
-        with open(settings.saved_model_file(RESULTS_FILE)) as fh:
-            return json.load(fh)
-    except FileNotFoundError:
-        return None
+    return load_json(RESULTS_FILE)

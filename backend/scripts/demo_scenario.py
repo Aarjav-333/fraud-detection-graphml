@@ -50,12 +50,11 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-import uvicorn
-from sqlalchemy.engine import make_url
-
+# Only app.config at import time: anything that imports app.database (app.models,
+# app.ml, app.main) must wait until point_app_at() has run - see its docstring.
 from app.config import BACKEND_DIR, settings
 from scripts.demo_common import (BUILD_DIR, DATABASE_NAME, DEMO_DIR, OLD_DIR, PREFIX, PREFIX_END,
-                                 demo_settings, point_app_at)
+                                 database_file, demo_settings, point_app_at)
 
 DEMO_PORT = 8000                                            # where the frontend's VITE_API_URL points
 COPY_TIMEOUT = 60                                           # seconds to wait for a locked database
@@ -66,33 +65,23 @@ DEMO_BUSY = ("The demo copy is in use: stop the demo backend (--serve), or wait 
 if os.name == "nt":
     import msvcrt
 
-    def _lock(fh) -> bool:
-        try:
-            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
-        except OSError as exc:
-            if exc.errno == errno.EACCES:   # another process holds it
-                return False
-            raise
-        return True
+    def _try_lock(fh):   # raises OSError if it can't
+        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
 
     def _unlock(fh):
         msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
 else:
     import fcntl
 
-    def _lock(fh) -> bool:
-        try:
-            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:   # another process holds it
-            return False
-        return True
+    def _try_lock(fh):   # raises OSError if it can't
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def _unlock(fh):
         fcntl.flock(fh, fcntl.LOCK_UN)
 
 # Older versions of this script planted into the real data
 LEGACY_SNAPSHOT_DIR = os.path.join(BACKEND_DIR, "data", "demo_snapshot")
-LEGACY_STATE = os.path.join(settings.saved_models_dir, "demo_state.json")
+LEGACY_STATE = settings.saved_model_file("demo_state.json")
 LEGACY_HELP = """\
 An older version of this script planted the demo into your real data (DEMO- rows
 in the database, or a data/demo_snapshot/ folder). Undo it with that version's
@@ -104,24 +93,26 @@ own cleanup, from the backend/ folder:
 
 # ------------------------------------------------------------- the real data
 
-def _database_file() -> str | None:
-    """The app's SQLite database file, or None if it doesn't use one."""
-    url = make_url(settings.DATABASE_URL)
-    if url.get_backend_name() != "sqlite" or url.database in (None, "", ":memory:"):
-        return None
-    return os.path.abspath(url.database)
+def _demo_folder_containing(path: str) -> str | None:
+    for folder in (DEMO_DIR, BUILD_DIR, OLD_DIR):
+        if os.path.normcase(path).startswith(os.path.normcase(folder + os.sep)):
+            return folder
+    return None
 
 
 def _source_database() -> str:
-    path = _database_file()
+    """The real database file to copy, once it's clear that neither it nor the
+    pipeline outputs are inside a demo folder."""
+    path = database_file(settings.DATABASE_URL)
     if path is None:
         raise SystemExit("The demo copies the database file, so it needs a SQLite DATABASE_URL.")
     if not os.path.isfile(path):
         raise SystemExit(f"No database at {path}. Set it up first:\n  python -m scripts.init_db\n"
                          "  python -m data.generate_synthetic\n  python -m scripts.seed_data")
-    for folder in (DEMO_DIR, BUILD_DIR, OLD_DIR):
-        if os.path.normcase(path).startswith(os.path.normcase(folder + os.sep)):
-            raise SystemExit(f"DATABASE_URL points into {folder}, a demo copy. Unset it first.")
+    for setting, value in (("DATABASE_URL", path), ("PIPELINE_OUTPUT_DIR", settings.saved_models_dir)):
+        folder = _demo_folder_containing(value)
+        if folder:
+            raise SystemExit(f"{setting} points into {folder}, a demo copy. Unset it first.")
     return path
 
 
@@ -182,6 +173,18 @@ def _delete_folder(folder: str) -> bool:
     return True
 
 
+def _remove_leftovers(strict: bool) -> None:
+    """Delete what an interrupted or partly failed run left behind: a half-built
+    copy, or a previous demo moved aside. They're never put back, so a
+    half-deleted folder can't come back as the demo. strict: fail if one can't
+    be deleted (a build needs the names free); otherwise leave it for next time."""
+    for folder in (BUILD_DIR, OLD_DIR):
+        if strict:
+            _delete_folder(folder)
+        else:
+            shutil.rmtree(folder, ignore_errors=True)
+
+
 def _copy_real_data(source: str, folder: str) -> None:
     """Copy the database and pipeline outputs into folder. Only reads the originals."""
     target = demo_settings(folder)
@@ -190,7 +193,7 @@ def _copy_real_data(source: str, folder: str) -> None:
     _sqlite_copy(source, os.path.join(folder, DATABASE_NAME))
     if os.path.isdir(settings.saved_models_dir):
         for name in os.listdir(settings.saved_models_dir):
-            path = os.path.join(settings.saved_models_dir, name)
+            path = settings.saved_model_file(name)
             if os.path.isfile(path):
                 shutil.copy2(path, target.saved_models_dir)
     if os.path.isfile(settings.features_csv):
@@ -198,34 +201,39 @@ def _copy_real_data(source: str, folder: str) -> None:
     print("Copied your database and pipeline outputs.")
 
 
-def _tidy_leftovers() -> None:
-    """Clear what an interrupted run left behind: a half-built copy, or the
-    previous demo moved aside mid-swap (put back if nothing replaced it)."""
-    _delete_folder(BUILD_DIR)
-    if os.path.exists(OLD_DIR):
-        if os.path.exists(DEMO_DIR):
-            _delete_folder(OLD_DIR)
-        else:
-            os.rename(OLD_DIR, DEMO_DIR)
+def _rename(source: str, target: str, attempts: int = 5) -> None:
+    """os.rename, retried for a couple of seconds: on Windows a virus scanner or
+    the search indexer can briefly hold files that were just written."""
+    for attempt in range(attempts):
+        try:
+            os.rename(source, target)
+            return
+        except OSError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.5)
 
 
 def _swap_in_build() -> None:
     """Replace the previous demo with the new build: move the old one aside,
-    move the new one in, then delete the old one. Each move is a rename, so
-    there is always one complete demo (see _tidy_leftovers)."""
+    move the new one in, then delete the old one. If the new one can't be
+    moved in, the old one is put back."""
     moved_aside = False
     try:
         if os.path.exists(DEMO_DIR):
-            os.rename(DEMO_DIR, OLD_DIR)
+            _rename(DEMO_DIR, OLD_DIR)
             moved_aside = True
-        os.rename(BUILD_DIR, DEMO_DIR)
+        _rename(BUILD_DIR, DEMO_DIR)
     except OSError as exc:
         if moved_aside:
-            os.rename(OLD_DIR, DEMO_DIR)   # put the previous demo back
+            try:
+                _rename(OLD_DIR, DEMO_DIR)   # put the previous demo back
+            except OSError:
+                pass   # then there's no demo; running the demo again builds a new one
         shutil.rmtree(BUILD_DIR, ignore_errors=True)
-        raise SystemExit(f"Couldn't replace the previous demo in {DEMO_DIR}: {exc.strerror}. "
-                         "Close any program using its files and try again.") from None
-    shutil.rmtree(OLD_DIR, ignore_errors=True)   # if a file is still open, the next run removes it
+        raise SystemExit(f"Couldn't swap in the new demo: {exc.strerror}. Close any program using "
+                         f"files in {DEMO_DIR} and run the demo again.") from None
+    shutil.rmtree(OLD_DIR, ignore_errors=True)   # a leftover goes on the next build or cleanup
 
 
 # ---------------------------------------------------------------- the commands
@@ -236,8 +244,12 @@ def _demo_lock():
     backend runs, so planting or cleaning up can't swap the copy out from under
     it. The OS releases the lock when the process ends, however it ends."""
     with open(LOCK_FILE, "a") as fh:
-        if not _lock(fh):
-            raise SystemExit(DEMO_BUSY)
+        try:
+            _try_lock(fh)
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EAGAIN):   # another process holds it
+                raise SystemExit(DEMO_BUSY) from None
+            raise SystemExit(f"Couldn't lock {LOCK_FILE}: {exc.strerror}") from None
         try:
             yield
         finally:
@@ -251,15 +263,13 @@ def build(plant_only: bool) -> None:
     if _has_legacy_demo(source):
         raise SystemExit(LEGACY_HELP)
     with _demo_lock():
-        _tidy_leftovers()
+        _remove_leftovers(strict=True)
         try:
             _copy_real_data(source, BUILD_DIR)
             engine = point_app_at(BUILD_DIR)   # from here on, this process only sees the copy
             try:
                 from scripts import demo_plant   # the ML stack: imported only now that it's needed
 
-                if hasattr(sys.stdout, "reconfigure"):   # rule labels use symbols cp1252 lacks
-                    sys.stdout.reconfigure(encoding="utf-8")
                 demo_plant.run(plant_only)
             finally:
                 engine.dispose()   # close the copy's connections so its folder can be moved
@@ -281,13 +291,14 @@ def serve() -> None:
     """Run the backend on the demo copy in this process, so the lock lasts
     exactly as long as the server does."""
     with _demo_lock():
-        _tidy_leftovers()
         if not os.path.isfile(os.path.join(DEMO_DIR, DATABASE_NAME)):
             raise SystemExit("There's no demo copy yet. Make one first: python -m scripts.demo_scenario")
         if _port_in_use(DEMO_PORT):
             raise SystemExit(f"Port {DEMO_PORT} is in use. Stop your normal backend "
                              "(Ctrl+C in its terminal) and try again.")
         point_app_at(DEMO_DIR)
+        import uvicorn   # only --serve needs it
+
         print(f"Serving the demo copy on http://127.0.0.1:{DEMO_PORT} - use the frontend as usual. "
               "Ctrl+C to stop.")
         try:
@@ -298,16 +309,18 @@ def serve() -> None:
 
 def cleanup() -> None:
     with _demo_lock():
-        _tidy_leftovers()
+        _remove_leftovers(strict=False)
         removed = _delete_folder(DEMO_DIR)
     if os.path.isfile(LEGACY_STATE):
         os.remove(LEGACY_STATE)
     print(f"Deleted the demo copy ({DEMO_DIR})." if removed else "There's no demo copy to delete.")
-    if _has_legacy_demo(_database_file()):
+    if _has_legacy_demo(database_file(settings.DATABASE_URL)):
         print("\n" + LEGACY_HELP)
 
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):   # not under pythonw or some IDE runners
+        sys.stdout.reconfigure(encoding="utf-8")   # rule labels and folder names cp1252 can't print
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--plant-only", action="store_true",

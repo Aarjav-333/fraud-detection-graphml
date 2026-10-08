@@ -20,15 +20,13 @@ Method:
 
 Results are cached to saved_models/rings.json for the UI.
 """
-import os
-import json
 from collections import defaultdict
 
 import networkx as nx
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.ml.alerts import score_to_risk
+from app.ml.outputs import load_json, save_json
 from app.ml.rules import RULE_CODES
 from app.models.transaction import Transaction
 from app.models.account import Account
@@ -164,9 +162,7 @@ def detect(db: Session) -> dict:
         "high_risk_rings": sum(1 for r in rings if r["risk"] == "High"),
         "rings": rings,
     }
-    os.makedirs(settings.saved_models_dir, exist_ok=True)
-    with open(settings.saved_model_file(RINGS_FILE), "w") as fh:
-        json.dump(summary, fh)
+    save_json(RINGS_FILE, summary)
     return summary
 
 
@@ -176,8 +172,4 @@ def ring_summary(ring: dict) -> dict:
 
 
 def load_rings() -> dict | None:
-    try:
-        with open(settings.saved_model_file(RINGS_FILE)) as fh:
-            return json.load(fh)
-    except FileNotFoundError:
-        return None
+    return load_json(RINGS_FILE)

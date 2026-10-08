@@ -129,6 +129,7 @@ def build_and_save(db: Session) -> dict:
 
 
 def load_features() -> pd.DataFrame | None:
-    if os.path.exists(settings.features_csv):
+    try:
         return pd.read_csv(settings.features_csv)
-    return None
+    except FileNotFoundError:
+        return None

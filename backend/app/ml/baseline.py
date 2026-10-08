@@ -9,9 +9,6 @@ Evaluates on a held-out stratified test set (accuracy, precision, recall, F1, RO
 then scores ALL accounts with the best supervised model and writes:
   Account.fraud_score  (probability of fraud, 0..1)
 """
-import os
-import json
-
 import joblib
 import numpy as np
 import pandas as pd
@@ -23,8 +20,8 @@ from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.ml.features import load_features
+from app.ml.outputs import load_json, output_path, save_json
 from app.models.account import Account
 
 RESULTS_FILE = "baseline_results.json"
@@ -111,8 +108,7 @@ def train_and_score(db: Session, test_size: float = 0.25, seed: int = 42) -> dic
             acc.fraud_score = round(float(mapping[acc.account_uid]), 4)
     db.commit()
 
-    os.makedirs(settings.saved_models_dir, exist_ok=True)
-    joblib.dump(best, settings.saved_model_file(f"{best_name}.joblib"))
+    joblib.dump(best, output_path(f"{best_name}.joblib"))
 
     summary = {
         "train_size": int(len(y_train)), "test_size": int(len(y_test)),
@@ -122,14 +118,9 @@ def train_and_score(db: Session, test_size: float = 0.25, seed: int = 42) -> dic
         "top_features": [{"feature": f, "importance": round(v, 4)} for f, v in top_features],
         "accounts_scored": int(len(df_scores)),
     }
-    with open(settings.saved_model_file(RESULTS_FILE), "w") as fh:
-        json.dump(summary, fh, indent=2)
+    save_json(RESULTS_FILE, summary, indent=2)
     return summary
 
 
 def load_results() -> dict | None:
-    try:
-        with open(settings.saved_model_file(RESULTS_FILE)) as fh:
-            return json.load(fh)
-    except FileNotFoundError:
-        return None
+    return load_json(RESULTS_FILE)
