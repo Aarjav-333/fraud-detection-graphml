@@ -27,13 +27,14 @@ from collections import defaultdict
 import networkx as nx
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.ml.alerts import score_to_risk
 from app.ml.rules import RULE_CODES
 from app.models.transaction import Transaction
 from app.models.account import Account
 from app.models.rule_hit import RuleHit
 
-SAVED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_models")
+SAVED_DIR = settings.saved_models_dir
 RINGS_JSON = os.path.join(SAVED_DIR, "rings.json")
 
 MIN_RING_SIZE = 4

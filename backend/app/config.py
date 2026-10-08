@@ -1,3 +1,4 @@
+import os
 from urllib.parse import urlsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -9,6 +10,8 @@ _PLACEHOLDER_ADMIN_PASSWORDS = ("admin123",)
 _MIN_SECRET_KEY_LENGTH = 32
 _MIN_SECRET_KEY_DISTINCT_CHARS = 10  # rejects "aaaa...", still allows hex keys
 _MIN_ADMIN_PASSWORD_LENGTH = 12
+
+BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class Settings(BaseSettings):
@@ -24,6 +27,11 @@ class Settings(BaseSettings):
     # (including unset) is treated as production, so a deploy that forgets
     # this variable fails closed instead of running with public defaults.
     APP_ENV: str = "production"
+    # Where pipeline outputs go: saved_models/ (models, rings, results) and
+    # processed/features.csv. Empty keeps them in their usual places
+    # (app/ml/saved_models, data/processed); the demo scenario points it at
+    # its own copy so it never touches these.
+    OUTPUT_DIR: str = ""
 
     # hide_input_in_errors keeps secret values out of validation errors/logs.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
@@ -31,6 +39,18 @@ class Settings(BaseSettings):
     @property
     def is_development(self) -> bool:
         return self.APP_ENV.strip().lower() == "development"
+
+    @property
+    def saved_models_dir(self) -> str:
+        if self.OUTPUT_DIR:
+            return os.path.abspath(os.path.join(self.OUTPUT_DIR, "saved_models"))
+        return os.path.join(BACKEND_DIR, "app", "ml", "saved_models")
+
+    @property
+    def processed_dir(self) -> str:
+        if self.OUTPUT_DIR:
+            return os.path.abspath(os.path.join(self.OUTPUT_DIR, "processed"))
+        return os.path.join(BACKEND_DIR, "data", "processed")
 
     @property
     def cors_origins(self) -> list[str]:

@@ -22,30 +22,37 @@ yet), so the supervised model is never told they are fraud: a high ML score is
 the model generalizing, not memorizing. Side effect: the rule engine's precision
 figure counts the demo transactions as false positives.
 
-Run from the backend/ folder, after init_db + seed_data:
-    python -m scripts.demo_scenario               # plant + run pipeline + report
-    python -m scripts.demo_scenario --plant-only  # plant, then click through the UI
-    python -m scripts.demo_scenario --cleanup     # put everything back
+Your own data is never changed. The demo works on a copy in data/demo/: your
+database, saved_models/ and features.csv are copied there, the scenario is
+planted into the copy, and the pipeline writes its outputs there too.
 
-Planting first snapshots the SQLite database, saved_models/ and features.csv
-into data/demo_snapshot/. --cleanup restores that snapshot exactly - scores,
-alerts, rings and GNN results included - so anything else changed after
-planting is rolled back too. Re-planting restores the snapshot before planting
-again. Without a snapshot (e.g. planted by an older version of this script),
---cleanup can only delete the DEMO- rows; re-run the pipeline afterwards.
+Run from the backend/ folder, after init_db + seed_data:
+    python -m scripts.demo_scenario               # copy, plant, run the pipeline, report
+    python -m scripts.demo_scenario --plant-only  # copy and plant; run the pipeline from the UI
+    python -m scripts.demo_scenario --serve       # run the backend on the copy, for the UI
+    python -m scripts.demo_scenario --cleanup     # delete the copy
+
+--serve uses port 8000 like the normal backend (so the frontend needs no
+changes): stop the normal backend first. Planting again starts over from a
+fresh copy of your current data.
 """
 import argparse
-import json
 import os
 import random
 import shutil
+import socket
 import sqlite3
+import subprocess
+import sys
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
+from pathlib import Path
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_
+from sqlalchemy.engine import make_url
 
+from app.config import BACKEND_DIR, settings
 from app.database import Base, SessionLocal, engine
 from app import models  # noqa: F401  (registers tables)
 from app.ml import alerts as alert_engine
@@ -53,8 +60,6 @@ from app.ml import baseline, features, fraud_ring, graph_analysis
 from app.ml import rules as rules_engine
 from app.models.account import Account
 from app.models.alert import Alert
-from app.models.case import Case
-from app.models.graph_metric import GraphMetric
 from app.models.rule_hit import RuleHit
 from app.models.transaction import Transaction
 
@@ -64,12 +69,15 @@ ML_ALERT_THRESHOLD = 0.8               # same default as the Fraud Alerts page
 YEAR_START, YEAR_END = datetime(2024, 1, 1), datetime(2024, 12, 31, 23, 59)
 QUIET_BEFORE, QUIET_AFTER = timedelta(days=1), timedelta(days=2)  # no background txns near the scenario
 
-BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SNAPSHOT_DIR = os.path.join(BACKEND_DIR, "data", "demo_snapshot")   # gitignored
-SNAPSHOT_DB = os.path.join(SNAPSHOT_DIR, "database.sqlite")
-SNAPSHOT_MODELS = os.path.join(SNAPSHOT_DIR, "saved_models")
-SNAPSHOT_FEATURES = os.path.join(SNAPSHOT_DIR, "features.csv")
-SNAPSHOT_META = os.path.join(SNAPSHOT_DIR, "snapshot.json")         # written last: marks it complete
+# The copy: a database plus OUTPUT_DIR for the pipeline's files (see app/config.py)
+DEMO_DIR = os.path.join(BACKEND_DIR, "data", "demo")   # gitignored
+DEMO_DB = os.path.join(DEMO_DIR, "fraud_detection.db")
+DEMO_SETTINGS = settings.model_copy(update={"DATABASE_URL": "sqlite:///" + Path(DEMO_DB).as_posix(),
+                                            "OUTPUT_DIR": DEMO_DIR})
+ON_COPY_FLAG = "DEMO_SCENARIO_ON_COPY"   # set for the child process that plants into the copy
+DEMO_PORT = 8000                         # where the frontend's VITE_API_URL points
+COPY_TIMEOUT = 60                        # seconds to wait for a locked database
+LEGACY_STATE = os.path.join(settings.saved_models_dir, "demo_state.json")  # written by an older version
 
 FEEDERS = [f"{PREFIX}FEED{i:02d}" for i in range(1, 10)]
 MULE = f"{PREFIX}MULE"
@@ -94,21 +102,16 @@ NAMES = [
     "Sunita Joshi", "Farhan Qureshi", "Kavya Nair", "Rohit Dhawan",        # cash-outs
 ]
 STAGES = ["1 Collection", "2 Consolidation", "3 Layering", "4 Cash-out"]
-
-# ASCII rule names (the app's RULE_LABELS use symbols some Windows consoles can't print)
-RULE_NAMES = {
-    "large_amount": "large amount", "rapid_transactions": "rapid", "new_account_large": "new account",
-    "fan_in": "fan-in", "fan_out": "fan-out", "circular": "circular",
-}
-RULE_LABEL = {rules_engine.RULE_CODES[r]: f"{rules_engine.RULE_CODES[r]} {name}"
-              for r, name in RULE_NAMES.items()}                              # "R4" -> "R4 fan-in"
+RULE_LABEL = {rules_engine.RULE_CODES[name]: label                   # "R4" -> "R4 · Many senders → one account"
+              for name, label in rules_engine.RULE_LABELS.items()}
 
 
 def _is_demo(column):
     # Case-sensitive prefix match that can still use the uid indexes. Not
-    # LIKE 'DEMO-%': SQLite's LIKE ignores case, so it would also match (and
-    # delete) a real account named "demo-...". '.' is the character after '-'.
-    return and_(column >= PREFIX, column < PREFIX[:-1] + ".")
+    # LIKE 'DEMO-%': SQLite's LIKE ignores case, so it would also match a real
+    # account named "demo-...". The upper bound is the prefix with its last
+    # character bumped by one ("DEMO." for "DEMO-").
+    return and_(column >= PREFIX, column < PREFIX[:-1] + chr(ord(PREFIX[-1]) + 1))
 
 
 # --------------------------------------------------------------- scenario data
@@ -197,166 +200,102 @@ def _background(accounts: list[dict], real_created: dict[str, datetime]) -> list
     return rows
 
 
-# ------------------------------------------------------------ snapshot/restore
+# ------------------------------------------------------------------- the copy
 
-def _database_file() -> str:
-    if engine.url.get_backend_name() != "sqlite":
-        raise SystemExit("The demo snapshots the database file, so it only supports SQLite "
-                         f"(DATABASE_URL is {engine.url.get_backend_name()}).")
-    return os.path.normcase(os.path.abspath(engine.url.database))
+def _source_database() -> str:
+    url = make_url(settings.DATABASE_URL)
+    if url.get_backend_name() != "sqlite" or url.database in (None, "", ":memory:"):
+        raise SystemExit("The demo copies the database file, so it needs a SQLite DATABASE_URL "
+                         f"(this one is {url.get_backend_name()}).")
+    path = os.path.abspath(url.database)
+    if not os.path.isfile(path):
+        raise SystemExit(f"No database at {path}. Set it up first:\n  python -m scripts.init_db\n"
+                         "  python -m data.generate_synthetic\n  python -m scripts.seed_data")
+    if os.path.normcase(path).startswith(os.path.normcase(DEMO_DIR + os.sep)):
+        raise SystemExit(f"DATABASE_URL points into {DEMO_DIR}, the demo copy itself. Unset it first.")
+    return path
 
 
-def _sqlite_copy(src_path: str, dst_path: str) -> None:
-    """Page-level copy with SQLite's backup API: safe while the dev server has
-    the database open, and an interrupted copy leaves the destination unchanged.
-    Callers must close their Session first - the copy waits on any open lock."""
-    engine.dispose()   # release this script's own pooled connections first
-    src, dst = sqlite3.connect(src_path), sqlite3.connect(dst_path)
+def _sqlite_copy(source: str, target: str) -> None:
+    """Copy a SQLite database with its backup API, which is consistent even
+    while the dev server is using it. The source is opened read-only: it is
+    never changed, and a missing file is an error rather than a new empty one."""
+    deadline = time.monotonic() + COPY_TIMEOUT
+
+    def give_up_when_stuck(status, remaining, total):
+        if time.monotonic() > deadline:   # backup() itself retries a locked database forever
+            raise TimeoutError
+
+    src = sqlite3.connect(Path(source).as_uri() + "?mode=ro", uri=True)
+    dst = sqlite3.connect(target)
     try:
-        src.backup(dst)
+        src.backup(dst, progress=give_up_when_stuck)
+    except TimeoutError:
+        raise SystemExit(f"{source} stayed locked for over {COPY_TIMEOUT}s. Is a pipeline step running "
+                         "in the app? Try again when it finishes.") from None
     finally:
         src.close()
         dst.close()
 
 
-def _load_snapshot() -> dict | None:
-    """The snapshot's metadata, or None if there is no complete, readable snapshot."""
+def _delete_copy() -> bool:
+    if not os.path.exists(DEMO_DIR):
+        return False
     try:
-        with open(SNAPSHOT_META) as fh:
-            meta = json.load(fh)
-        return meta if {"database", "taken_at"} <= meta.keys() else None
-    except (OSError, ValueError):
-        return None
+        shutil.rmtree(DEMO_DIR)
+    except OSError as exc:
+        raise SystemExit(f"Couldn't delete {DEMO_DIR}: {exc.strerror}. If the demo backend "
+                         "(--serve) is running, stop it and try again.") from None
+    return True
 
 
-def _take_snapshot() -> None:
-    shutil.rmtree(SNAPSHOT_DIR, ignore_errors=True)        # drop any incomplete leftovers
-    os.makedirs(SNAPSHOT_MODELS)
-    _sqlite_copy(_database_file(), SNAPSHOT_DB)
-    if os.path.isdir(fraud_ring.SAVED_DIR):
-        for name in os.listdir(fraud_ring.SAVED_DIR):
-            path = os.path.join(fraud_ring.SAVED_DIR, name)
+def make_copy() -> None:
+    """Fresh copy of the database and pipeline outputs into DEMO_DIR. Only
+    reads from the originals."""
+    source = _source_database()
+    _delete_copy()
+    os.makedirs(DEMO_SETTINGS.saved_models_dir)
+    os.makedirs(DEMO_SETTINGS.processed_dir)
+    _sqlite_copy(source, DEMO_DB)
+    if os.path.isdir(settings.saved_models_dir):
+        for name in os.listdir(settings.saved_models_dir):
+            path = os.path.join(settings.saved_models_dir, name)
             if os.path.isfile(path):
-                shutil.copy2(path, SNAPSHOT_MODELS)
-    has_features = os.path.exists(features.FEATURES_CSV)
-    if has_features:
-        shutil.copy2(features.FEATURES_CSV, SNAPSHOT_FEATURES)
-    meta = {"database": _database_file(), "taken_at": datetime.now().isoformat(timespec="seconds"),
-            "has_features": has_features}
-    with open(SNAPSHOT_META + ".tmp", "w") as fh:
-        json.dump(meta, fh)
-    os.replace(SNAPSHOT_META + ".tmp", SNAPSHOT_META)   # atomic: the snapshot now counts as complete
+                shutil.copy2(path, DEMO_SETTINGS.saved_models_dir)
+    if os.path.isfile(features.FEATURES_CSV):
+        shutil.copy2(features.FEATURES_CSV, DEMO_SETTINGS.processed_dir)
+    print(f"Copied your database and pipeline outputs into {DEMO_DIR}", flush=True)  # before the child prints
 
 
-def _restore_snapshot(meta: dict) -> None:
-    """Put the pipeline outputs, then the database, back exactly as snapshotted.
-    The database goes last: until it is restored the demo still shows as planted,
-    so an interrupted restore is simply repeated on the next run."""
-    os.makedirs(fraud_ring.SAVED_DIR, exist_ok=True)
-    for name in os.listdir(fraud_ring.SAVED_DIR):
-        path = os.path.join(fraud_ring.SAVED_DIR, name)
-        if os.path.isfile(path):
-            os.remove(path)
-    for name in os.listdir(SNAPSHOT_MODELS):
-        shutil.copy2(os.path.join(SNAPSHOT_MODELS, name), fraud_ring.SAVED_DIR)
-    if meta.get("has_features"):
-        shutil.copy2(SNAPSHOT_FEATURES, features.FEATURES_CSV)
-    elif os.path.exists(features.FEATURES_CSV):
-        os.remove(features.FEATURES_CSV)
-    _sqlite_copy(SNAPSHOT_DB, _database_file())
-
-
-def _demo_planted(db) -> bool:
-    return db.query(Account.id).filter(_is_demo(Account.account_uid)).first() is not None
-
-
-def remove_demo_rows(db) -> dict:
-    """Fallback when there is no snapshot: delete demo accounts and every row
-    that references them. Scores, features and rings keep the demo's influence
-    until the pipeline is re-run."""
-    demo_alert = or_(_is_demo(Alert.account_uid), _is_demo(Alert.transaction_uid))
-    touches_demo = or_(_is_demo(Transaction.txn_uid), _is_demo(Transaction.sender_uid),
-                       _is_demo(Transaction.receiver_uid))
-    removed = {
-        # cases on demo accounts, or on an alert about a demo transaction (which
-        # can name a real account) - deleting the alert alone would orphan the case
-        "cases": db.query(Case).filter(or_(_is_demo(Case.account_uid),
-                                           Case.alert_uid.in_(select(Alert.alert_uid).where(demo_alert))))
-                   .delete(synchronize_session=False),
-        "alerts": db.query(Alert).filter(demo_alert).delete(synchronize_session=False),
-        "rule_hits": db.query(RuleHit)
-                       .filter(RuleHit.txn_uid.in_(select(Transaction.txn_uid).where(touches_demo)))
-                       .delete(synchronize_session=False),
-        "graph_metrics": db.query(GraphMetric).filter(_is_demo(GraphMetric.account_uid))
-                           .delete(synchronize_session=False),
-        "transactions": db.query(Transaction).filter(touches_demo).delete(synchronize_session=False),
-        "accounts": db.query(Account).filter(_is_demo(Account.account_uid)).delete(synchronize_session=False),
-    }
-    db.commit()
-    return removed
-
-
-def _snapshot_for_this_database() -> dict | None:
-    """The snapshot, if it exists and was taken of the database in use."""
-    meta = _load_snapshot()
-    if meta and meta["database"] != _database_file():
-        raise SystemExit(f"{SNAPSHOT_DIR} holds a demo snapshot of a different database "
-                         f"({meta['database']}). Run --cleanup with that database first, "
-                         "or delete the folder if you no longer need it.")
-    return meta
+def _demo_env() -> dict:
+    """Environment that points the app at the copy (env vars beat .env)."""
+    return {**os.environ, "DATABASE_URL": DEMO_SETTINGS.DATABASE_URL, "OUTPUT_DIR": DEMO_DIR}
 
 
 # ---------------------------------------------------------------- the commands
 
 def plant(db) -> None:
-    _database_file()   # fail early on non-SQLite
-    if not db.query(Account.id).filter(~_is_demo(Account.account_uid)).first():
+    if db.query(Account.id).filter(_is_demo(Account.account_uid)).first():
+        raise SystemExit(
+            "Your database already has DEMO- accounts, planted into it by an older version of "
+            "this script. To remove them, rebuild it: delete fraud_detection.db, then run "
+            "python -m scripts.init_db and python -m scripts.seed_data.")
+    real_created = dict(db.query(Account.account_uid, Account.created_at))
+    if not real_created:
         raise SystemExit("No base dataset found. Seed it first:\n"
                          "  python -m data.generate_synthetic\n  python -m scripts.seed_data")
-    snapshot = _snapshot_for_this_database()
-    planted = _demo_planted(db)
-    if planted and not snapshot:   # planted without a snapshot, e.g. by an older version
-        removed = remove_demo_rows(db)
-        print("Removed old demo rows: " + ", ".join(f"{n} {k}" for k, n in removed.items() if n))
-    db.close()   # end this session's transaction: the SQLite backup waits on any open lock
-    if snapshot and planted:
-        _restore_snapshot(snapshot)
-        print(f"Restored the pre-demo state from {snapshot['taken_at']} before planting again.")
-    else:
-        _take_snapshot()           # (a snapshot without a planted demo is stale: replace it)
-
-    real_created = dict(db.query(Account.account_uid, Account.created_at)
-                          .filter(~_is_demo(Account.account_uid)))
     accounts, txns = _accounts(), _transactions()
     background = _background(accounts, real_created)
     db.bulk_insert_mappings(Account, accounts)
     db.bulk_insert_mappings(Transaction, [row for _, row in txns] + background)
     db.commit()
     print(f"Planted {len(accounts)} accounts, {len(txns)} scenario transactions and "
-          f"{len(background)} ordinary background transactions (ids start with {PREFIX}).")
+          f"{len(background)} ordinary background transactions into the copy "
+          f"(ids start with {PREFIX}).")
     for stage in STAGES:
         stage_rows = [row for s, row in txns if s == stage]
         total = sum(r["amount"] for r in stage_rows)
         print(f"  {stage:16s} {len(stage_rows):2d} txns  Rs {total:>12,.0f}")
-
-
-def cleanup(db) -> None:
-    snapshot = _snapshot_for_this_database()
-    planted = _demo_planted(db)
-    if snapshot and planted:
-        db.close()   # end this session's transaction: the SQLite backup waits on any open lock
-        _restore_snapshot(snapshot)
-        print(f"Restored the database, saved_models/ and features.csv to how they were at "
-              f"{snapshot['taken_at']}, when the demo was planted. Anything else changed since "
-              "then was rolled back too.")
-    elif planted:
-        removed = remove_demo_rows(db)
-        print("No snapshot found, so only the demo rows were removed: "
-              + ", ".join(f"{n} {k}" for k, n in removed.items()) + ".")
-        print("Scores, features and rings may still reflect the demo - re-run the pipeline from the UI.")
-    else:
-        print("The demo isn't planted in this database; nothing to remove.")
-    shutil.rmtree(SNAPSHOT_DIR, ignore_errors=True)
 
 
 def run_pipeline(db) -> dict:
@@ -426,34 +365,81 @@ def report(db, rings: dict) -> None:
               f"{', '.join(RULE_LABEL[c] for c in ring['rules']) or 'none'}")
 
 
+def plant_and_run(plant_only: bool) -> None:
+    """Runs in the child process, where the whole app is pointed at the copy."""
+    if settings.DATABASE_URL != DEMO_SETTINGS.DATABASE_URL:   # never plant into the real database
+        raise SystemExit(f"{ON_COPY_FLAG} is set but DATABASE_URL isn't the demo copy.")
+    Base.metadata.create_all(bind=engine)   # the copy may predate newer tables
+    db = SessionLocal()
+    try:
+        plant(db)
+        if plant_only:
+            print("\nNow stop your normal backend, start the demo one with\n"
+                  "  python -m scripts.demo_scenario --serve\nthen log in and run, in the "
+                  "sidebar's order: Rule Detection -> Graph Analysis -> Features -> ML Scoring "
+                  f"-> Fraud Alerts -> Fraud Rings.\nThen search for {PREFIX} on the Accounts, "
+                  "Alerts and Fraud Rings pages.")
+            return
+        print("\nRunning the detection pipeline on the copy:")
+        results = run_pipeline(db)
+        report(db, results["Fraud Rings"])
+        print("\nTo show it in the UI, stop your normal backend and run\n"
+              "  python -m scripts.demo_scenario --serve\n"
+              f"then search for {PREFIX} on Accounts / Alerts, or open the ring on Fraud Rings.")
+        print("Your own database and pipeline outputs were not changed. "
+              "Delete the copy with --cleanup.")
+    finally:
+        db.close()
+
+
+def serve() -> None:
+    if not os.path.isfile(DEMO_DB):
+        raise SystemExit("There's no demo copy yet. Make one first: python -m scripts.demo_scenario")
+    with socket.socket() as sock:
+        try:
+            sock.bind(("127.0.0.1", DEMO_PORT))
+        except OSError:
+            raise SystemExit(f"Port {DEMO_PORT} is in use. Stop your normal backend "
+                             "(Ctrl+C in its terminal) and try again.") from None
+    print(f"Serving the demo copy on http://127.0.0.1:{DEMO_PORT} - use the frontend as usual. "
+          "Ctrl+C to stop.")
+    try:
+        subprocess.call([sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(DEMO_PORT)],
+                        env=_demo_env())
+    except KeyboardInterrupt:
+        pass
+
+
+def cleanup() -> None:
+    removed = _delete_copy()
+    if os.path.isfile(LEGACY_STATE):
+        os.remove(LEGACY_STATE)
+    print(f"Deleted the demo copy ({DEMO_DIR})." if removed else "There's no demo copy to delete.")
+
+
 def main():
+    sys.stdout.reconfigure(encoding="utf-8")   # rule labels use symbols cp1252 lacks (when output is redirected)
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--plant-only", action="store_true",
                        help="plant the scenario but leave the pipeline to the UI")
-    group.add_argument("--cleanup", action="store_true",
-                       help="restore the snapshot taken when the demo was planted")
+    group.add_argument("--serve", action="store_true",
+                       help="run the backend on the demo copy (stop the normal one first)")
+    group.add_argument("--cleanup", action="store_true", help="delete the demo copy")
     args = parser.parse_args()
 
-    Base.metadata.create_all(bind=engine)
-    db = SessionLocal()
-    try:
-        if args.cleanup:
-            cleanup(db)
-            return
-        plant(db)
-        if args.plant_only:
-            print("\nNow log in and run, in the sidebar's order: Rule Detection -> Graph Analysis -> "
-                  "Features -> ML Scoring -> Fraud Alerts -> Fraud Rings.\nThen search for "
-                  f"{PREFIX} on the Accounts, Alerts and Fraud Rings pages.")
-            return
-        print("\nRunning the detection pipeline:")
-        results = run_pipeline(db)
-        report(db, results["Fraud Rings"])
-        print(f"\nIn the UI: search for {PREFIX} on Accounts / Alerts, or open the ring on Fraud Rings.")
-        print("Put everything back with: python -m scripts.demo_scenario --cleanup")
-    finally:
-        db.close()
+    if args.cleanup:
+        cleanup()
+    elif args.serve:
+        serve()
+    elif os.environ.get(ON_COPY_FLAG):
+        plant_and_run(args.plant_only)
+    else:
+        make_copy()
+        # The app reads DATABASE_URL and OUTPUT_DIR once, when it is imported, so
+        # planting and the pipeline run in a fresh process that sees only the copy.
+        sys.exit(subprocess.call([sys.executable, "-m", "scripts.demo_scenario", *sys.argv[1:]],
+                                 env={**_demo_env(), ON_COPY_FLAG: "1"}))
 
 
 if __name__ == "__main__":

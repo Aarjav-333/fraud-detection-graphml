@@ -5,7 +5,8 @@ Builds one feature row per account by combining:
   Graph features       : degree, centrality, PageRank, cycle membership, community size
 Label                  : is_fraud (ground truth from the synthetic data)
 
-The matrix is saved to data/processed/features.csv and reused by the ML models (Phase 9).
+The matrix is saved to data/processed/features.csv (OUTPUT_DIR in config can move it)
+and reused by the ML models (Phase 9).
 """
 import os
 from collections import defaultdict
@@ -13,14 +14,12 @@ from collections import defaultdict
 import pandas as pd
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.graph_metric import GraphMetric
 
-PROCESSED_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "data", "processed",
-)
+PROCESSED_DIR = settings.processed_dir
 FEATURES_CSV = os.path.join(PROCESSED_DIR, "features.csv")
 
 FEATURE_DESCRIPTIONS = {

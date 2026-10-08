@@ -23,10 +23,11 @@ from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.ml.features import load_features
 from app.models.account import Account
 
-SAVED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_models")
+SAVED_DIR = settings.saved_models_dir
 RESULTS_JSON = os.path.join(SAVED_DIR, "baseline_results.json")
 
 FEATURE_COLS = [
