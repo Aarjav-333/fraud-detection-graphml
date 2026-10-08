@@ -74,6 +74,7 @@ backend/app/ml/saved_models/*.json
 backend/data/processed/features.csv
 backend/data/demo/
 backend/data/demo.new/
+backend/data/demo.lock
 # left by an older version of the demo script
 backend/data/demo_snapshot/
 

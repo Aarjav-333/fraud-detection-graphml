@@ -34,9 +34,6 @@ from app.models.transaction import Transaction
 from app.models.account import Account
 from app.models.rule_hit import RuleHit
 
-SAVED_DIR = settings.saved_models_dir
-RINGS_JSON = os.path.join(SAVED_DIR, "rings.json")
-
 MIN_RING_SIZE = 4
 ML_SCORE_FLOOR = 0.7      # accounts above this join the suspicious subgraph
 MAX_RING_MEMBERS_SHOWN = 40
@@ -166,8 +163,8 @@ def detect(db: Session) -> dict:
         "high_risk_rings": sum(1 for r in rings if r["risk"] == "High"),
         "rings": rings,
     }
-    os.makedirs(SAVED_DIR, exist_ok=True)
-    with open(RINGS_JSON, "w") as fh:
+    os.makedirs(settings.saved_models_dir, exist_ok=True)
+    with open(_rings_json(), "w") as fh:
         json.dump(summary, fh)
     return summary
 
@@ -177,8 +174,12 @@ def ring_summary(ring: dict) -> dict:
     return {k: v for k, v in ring.items() if k not in DETAIL_KEYS}
 
 
+def _rings_json() -> str:
+    return os.path.join(settings.saved_models_dir, "rings.json")
+
+
 def load_rings() -> dict | None:
-    if os.path.exists(RINGS_JSON):
-        with open(RINGS_JSON) as fh:
+    if os.path.exists(_rings_json()):
+        with open(_rings_json()) as fh:
             return json.load(fh)
     return None

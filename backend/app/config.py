@@ -30,7 +30,9 @@ class Settings(BaseSettings):
     # Where pipeline outputs go: saved_models/ (models, rings, results) and
     # processed/features.csv. Empty keeps them in their usual places
     # (app/ml/saved_models, data/processed); the demo scenario points it at
-    # its own copy so it never touches these. Relative to backend/.
+    # its own copy so it never touches these. Relative to backend/. Code reads
+    # the paths below when it uses them, not at import, so a change at runtime
+    # takes effect.
     PIPELINE_OUTPUT_DIR: str = ""
 
     # hide_input_in_errors keeps secret values out of validation errors/logs.
@@ -51,6 +53,10 @@ class Settings(BaseSettings):
         if self.PIPELINE_OUTPUT_DIR:
             return os.path.normpath(os.path.join(BACKEND_DIR, self.PIPELINE_OUTPUT_DIR, "processed"))
         return os.path.join(BACKEND_DIR, "data", "processed")
+
+    @property
+    def features_csv(self) -> str:
+        return os.path.join(self.processed_dir, "features.csv")
 
     @property
     def cors_origins(self) -> list[str]:

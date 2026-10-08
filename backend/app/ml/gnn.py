@@ -21,11 +21,9 @@ import numpy as np
 from sqlalchemy.orm import Session
 
 from app.config import BACKEND_DIR, settings
-from app.ml.features import load_features, FEATURES_CSV
+from app.ml.features import load_features
 from app.models.transaction import Transaction
 
-SAVED_DIR = settings.saved_models_dir
-RESULTS_JSON = os.path.join(SAVED_DIR, "gnn_results.json")
 ELLIPTIC_ROOT = os.path.join(BACKEND_DIR, "data", "elliptic")   # a shared download cache, not an output
 
 FEATURE_COLS = [
@@ -213,16 +211,20 @@ def train(db: Session, source: str = "synthetic", model_type: str = "graphsage",
         "train_seconds": round(time.time() - t0, 1),
     }
 
-    os.makedirs(SAVED_DIR, exist_ok=True)
+    os.makedirs(settings.saved_models_dir, exist_ok=True)
     all_results = load_results() or {}
     all_results[f"{source}_{model_type}"] = summary
-    with open(RESULTS_JSON, "w") as fh:
+    with open(_results_json(), "w") as fh:
         json.dump(all_results, fh, indent=2)
     return summary
 
 
+def _results_json() -> str:
+    return os.path.join(settings.saved_models_dir, "gnn_results.json")
+
+
 def load_results() -> dict | None:
-    if os.path.exists(RESULTS_JSON):
-        with open(RESULTS_JSON) as fh:
+    if os.path.exists(_results_json()):
+        with open(_results_json()) as fh:
             return json.load(fh)
     return None

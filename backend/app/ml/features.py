@@ -19,9 +19,6 @@ from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.graph_metric import GraphMetric
 
-PROCESSED_DIR = settings.processed_dir
-FEATURES_CSV = os.path.join(PROCESSED_DIR, "features.csv")
-
 FEATURE_DESCRIPTIONS = {
     "total_sent": "Total amount the account sent",
     "total_received": "Total amount the account received",
@@ -115,8 +112,8 @@ def _shown_path(path: str) -> str:
 
 def build_and_save(db: Session) -> dict:
     df = build_features(db)
-    os.makedirs(PROCESSED_DIR, exist_ok=True)
-    df.to_csv(FEATURES_CSV, index=False)
+    os.makedirs(settings.processed_dir, exist_ok=True)
+    df.to_csv(settings.features_csv, index=False)
     n_fraud = int(df["is_fraud"].sum())
     return {
         "accounts": int(len(df)),
@@ -124,7 +121,7 @@ def build_and_save(db: Session) -> dict:
         "fraud_accounts": n_fraud,
         "fraud_ratio": round(n_fraud / len(df), 4) if len(df) else 0.0,
         "graph_metrics_joined": bool(db.query(GraphMetric).count()),
-        "saved_to": _shown_path(FEATURES_CSV),
+        "saved_to": _shown_path(settings.features_csv),
         "feature_list": [
             {"name": k, "description": v} for k, v in FEATURE_DESCRIPTIONS.items()
         ],
@@ -132,6 +129,6 @@ def build_and_save(db: Session) -> dict:
 
 
 def load_features() -> pd.DataFrame | None:
-    if os.path.exists(FEATURES_CSV):
-        return pd.read_csv(FEATURES_CSV)
+    if os.path.exists(settings.features_csv):
+        return pd.read_csv(settings.features_csv)
     return None

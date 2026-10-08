@@ -33,9 +33,9 @@ Run from the backend/ folder, after init_db + seed_data:
     python -m scripts.demo_scenario --cleanup     # delete the copy
 
 --serve uses port 8000 like the normal backend (so the frontend needs no
-changes): stop the normal backend first, and stop --serve before planting
-again or cleaning up. Planting again builds a fresh copy of your current data
-next to the old one and only replaces it once planting has worked.
+changes): stop the normal backend first. While it runs, planting again and
+--cleanup refuse to start. Planting again builds a fresh copy of your current
+data next to the old one and only replaces it once planting has worked.
 
 The planting itself lives in scripts/demo_plant.py.
 """
@@ -47,6 +47,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy.engine import make_url
@@ -64,6 +65,26 @@ BUILD_DIR = os.path.join(BACKEND_DIR, "data", "demo.new")   # the copy being bui
 DATABASE_NAME = "fraud_detection.db"
 DEMO_PORT = 8000                                            # where the frontend's VITE_API_URL points
 COPY_TIMEOUT = 60                                           # seconds to wait for a locked database
+LOCK_FILE = os.path.join(BACKEND_DIR, "data", "demo.lock")  # held while a demo command runs (gitignored)
+DEMO_BUSY = ("The demo copy is in use: stop the demo backend (--serve), or wait for the other "
+             "demo command to finish.")
+
+if os.name == "nt":
+    import msvcrt
+
+    def _lock(fh):   # raises OSError if another process holds it
+        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+
+    def _unlock(fh):
+        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+else:
+    import fcntl
+
+    def _lock(fh):   # raises OSError if another process holds it
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock(fh):
+        fcntl.flock(fh, fcntl.LOCK_UN)
 
 # Older versions of this script planted into the real data
 LEGACY_SNAPSHOT_DIR = os.path.join(BACKEND_DIR, "data", "demo_snapshot")
@@ -182,13 +203,28 @@ def _copy_real_data(source: str, folder: str) -> None:
             path = os.path.join(settings.saved_models_dir, name)
             if os.path.isfile(path):
                 shutil.copy2(path, target.saved_models_dir)
-    features_csv = os.path.join(settings.processed_dir, "features.csv")
-    if os.path.isfile(features_csv):
-        shutil.copy2(features_csv, target.processed_dir)
-    print("Copied your database and pipeline outputs.", flush=True)   # before the child prints
+    if os.path.isfile(settings.features_csv):
+        shutil.copy2(settings.features_csv, target.processed_dir)
+    print("Copied your database and pipeline outputs.")
 
 
 # ---------------------------------------------------------------- the commands
+
+@contextmanager
+def _demo_lock():
+    """One demo command at a time: --serve holds this for as long as the demo
+    backend runs, so planting or cleaning up can't swap the copy out from under
+    it. The OS releases the lock when the process ends, however it ends."""
+    with open(LOCK_FILE, "a") as fh:
+        try:
+            _lock(fh)
+        except OSError:
+            raise SystemExit(DEMO_BUSY) from None
+        try:
+            yield
+        finally:
+            _unlock(fh)
+
 
 def build(plant_only: bool) -> None:
     """Copy the real data into BUILD_DIR, plant and run there, then swap it in
@@ -196,22 +232,18 @@ def build(plant_only: bool) -> None:
     source = _source_database()
     if _has_legacy_demo(source):
         raise SystemExit(LEGACY_HELP)
-    _delete_folder(BUILD_DIR)   # left by an interrupted run
-    try:
-        _copy_real_data(source, BUILD_DIR)
-        # The app reads DATABASE_URL and PIPELINE_OUTPUT_DIR once, when it is
-        # imported, so planting runs in a fresh process that sees only the copy.
-        code = subprocess.call([sys.executable, "-m", "scripts.demo_plant",
-                                *(["--plant-only"] if plant_only else [])],
-                               env=_env_for(BUILD_DIR))
-    except BaseException:
-        shutil.rmtree(BUILD_DIR, ignore_errors=True)
-        raise
-    if code:
-        shutil.rmtree(BUILD_DIR, ignore_errors=True)
-        sys.exit(code)
-    _delete_folder(DEMO_DIR)
-    os.rename(BUILD_DIR, DEMO_DIR)
+    from scripts import demo_plant   # the ML stack: only planting needs it, so the other commands stay fast
+
+    with _demo_lock():
+        _delete_folder(BUILD_DIR)   # left by an interrupted run
+        try:
+            _copy_real_data(source, BUILD_DIR)
+            demo_plant.run(BUILD_DIR, plant_only)
+        except BaseException:
+            shutil.rmtree(BUILD_DIR, ignore_errors=True)
+            raise
+        _delete_folder(DEMO_DIR)
+        os.rename(BUILD_DIR, DEMO_DIR)
 
 
 def _port_in_use(port: int) -> bool:
@@ -225,22 +257,24 @@ def _port_in_use(port: int) -> bool:
 def serve() -> None:
     if not os.path.isfile(os.path.join(DEMO_DIR, DATABASE_NAME)):
         raise SystemExit("There's no demo copy yet. Make one first: python -m scripts.demo_scenario")
-    if _port_in_use(DEMO_PORT):
-        raise SystemExit(f"Port {DEMO_PORT} is in use. Stop your normal backend "
-                         "(Ctrl+C in its terminal) and try again.")
-    print(f"Serving the demo copy on http://127.0.0.1:{DEMO_PORT} - use the frontend as usual. "
-          "Ctrl+C to stop (and stop it before planting again or cleaning up).")
-    server = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(DEMO_PORT)],
-                              env=_env_for(DEMO_DIR))
-    try:
-        sys.exit(server.wait())
-    except KeyboardInterrupt:   # the server got the Ctrl+C too: let it finish shutting down
-        server.wait()
+    with _demo_lock():
+        if _port_in_use(DEMO_PORT):
+            raise SystemExit(f"Port {DEMO_PORT} is in use. Stop your normal backend "
+                             "(Ctrl+C in its terminal) and try again.")
+        print(f"Serving the demo copy on http://127.0.0.1:{DEMO_PORT} - use the frontend as usual. "
+              "Ctrl+C to stop.")
+        server = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app",
+                                   "--port", str(DEMO_PORT)], env=_env_for(DEMO_DIR))
+        try:
+            sys.exit(server.wait())
+        except KeyboardInterrupt:   # the server got the Ctrl+C too: let it finish shutting down
+            server.wait()
 
 
 def cleanup() -> None:
-    removed = _delete_folder(DEMO_DIR)
-    _delete_folder(BUILD_DIR)   # left by an interrupted run
+    with _demo_lock():
+        removed = _delete_folder(DEMO_DIR)
+        _delete_folder(BUILD_DIR)   # left by an interrupted run
     if os.path.isfile(LEGACY_STATE):
         os.remove(LEGACY_STATE)
     print(f"Deleted the demo copy ({DEMO_DIR})." if removed else "There's no demo copy to delete.")
@@ -249,6 +283,7 @@ def cleanup() -> None:
 
 
 def main():
+    sys.stdout.reconfigure(encoding="utf-8")   # rule labels use symbols cp1252 lacks (when output is redirected)
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--plant-only", action="store_true",

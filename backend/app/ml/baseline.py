@@ -27,9 +27,6 @@ from app.config import settings
 from app.ml.features import load_features
 from app.models.account import Account
 
-SAVED_DIR = settings.saved_models_dir
-RESULTS_JSON = os.path.join(SAVED_DIR, "baseline_results.json")
-
 FEATURE_COLS = [
     "total_sent", "total_received", "txn_count_sent", "txn_count_received",
     "unique_receivers", "unique_senders", "avg_sent_amount", "avg_received_amount",
@@ -112,8 +109,8 @@ def train_and_score(db: Session, test_size: float = 0.25, seed: int = 42) -> dic
             acc.fraud_score = round(float(mapping[acc.account_uid]), 4)
     db.commit()
 
-    os.makedirs(SAVED_DIR, exist_ok=True)
-    joblib.dump(best, os.path.join(SAVED_DIR, f"{best_name}.joblib"))
+    os.makedirs(settings.saved_models_dir, exist_ok=True)
+    joblib.dump(best, os.path.join(settings.saved_models_dir, f"{best_name}.joblib"))
 
     summary = {
         "train_size": int(len(y_train)), "test_size": int(len(y_test)),
@@ -123,13 +120,17 @@ def train_and_score(db: Session, test_size: float = 0.25, seed: int = 42) -> dic
         "top_features": [{"feature": f, "importance": round(v, 4)} for f, v in top_features],
         "accounts_scored": int(len(df_scores)),
     }
-    with open(RESULTS_JSON, "w") as fh:
+    with open(_results_json(), "w") as fh:
         json.dump(summary, fh, indent=2)
     return summary
 
 
+def _results_json() -> str:
+    return os.path.join(settings.saved_models_dir, "baseline_results.json")
+
+
 def load_results() -> dict | None:
-    if os.path.exists(RESULTS_JSON):
-        with open(RESULTS_JSON) as fh:
+    if os.path.exists(_results_json()):
+        with open(_results_json()) as fh:
             return json.load(fh)
     return None
