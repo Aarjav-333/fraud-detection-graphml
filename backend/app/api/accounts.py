@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.deps import get_current_user
-from app.schemas.account import AccountCreate, AccountUpdate, AccountOut, AccountList
+from app.schemas.account import AccountCreate, AccountUpdate, AccountOut, AccountList, RISK_LEVEL_IS_COMPUTED
 from app.crud import account as crud
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"], dependencies=[Depends(get_current_user)])
@@ -40,6 +40,10 @@ def get_account(account_uid: str, db: Session = Depends(get_db)):
 
 @router.put("/{account_uid}", response_model=AccountOut)
 def update_account(account_uid: str, data: AccountUpdate, db: Session = Depends(get_db)):
+    if data.risk_level is not None:
+        current = crud.get_account(db, account_uid)
+        if current is not None and data.risk_level != current.risk_level:
+            raise HTTPException(status_code=422, detail=RISK_LEVEL_IS_COMPUTED)
     acc = crud.update_account(db, account_uid, data)
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")

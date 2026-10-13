@@ -74,7 +74,9 @@ flowchart LR
    amounts and dates, and can clean them (try it with `data/raw/sample_messy.csv`).
 2. **Rule engine** — six business rules, no ML. Flagged transactions are marked
    *suspicious* and the accounts involved get a raised risk level (Medium, or High
-   when hit by two or more rules).
+   when hit by two or more rules). The risk level is set only by the rule engine: new
+   accounts start at Low and the account forms show it read-only. A separate, optional
+   *onboarding risk category* (KYC) can be set by hand and affects nothing else.
 
    | Rule | Flags |
    |---|---|

@@ -65,7 +65,8 @@ def create_account(db: Session, data: AccountCreate) -> Account:
         email=data.email,
         phone=data.phone,
         account_type=data.account_type,
-        risk_level=data.risk_level or "Low",
+        risk_level="Low",   # only the rule engine raises it
+        onboarding_risk_category=data.onboarding_risk_category,
     )
     db.add(acc)
     db.commit()
@@ -77,7 +78,8 @@ def update_account(db: Session, account_uid: str, data: AccountUpdate) -> Option
     acc = get_account(db, account_uid)
     if not acc:
         return None
-    for field, value in data.model_dump(exclude_unset=True).items():
+    # risk_level is computed by the rule engine: never written from a request
+    for field, value in data.model_dump(exclude_unset=True, exclude={"risk_level"}).items():
         setattr(acc, field, value)
     db.commit()
     db.refresh(acc)

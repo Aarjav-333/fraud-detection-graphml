@@ -31,6 +31,7 @@ def test_existing_database_keeps_its_rows(tmp_path: Path):
 
     assert applied == [version for version, _ in MIGRATIONS]
     assert {"review_status", "review_updated_at", "fraud_confirmed_by", "fraud_confirmed_at"} <= _columns(engine, "accounts")
+    assert "onboarding_risk_category" in _columns(engine, "accounts")
     assert "idempotency_key" in _columns(engine, "transactions")
     assert {"account_status_events", "fraud_notifications", "notification_reads", "email_deliveries"} \
         <= set(inspect(engine).get_table_names())

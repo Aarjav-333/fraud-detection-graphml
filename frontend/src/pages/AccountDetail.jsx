@@ -252,7 +252,7 @@ export default function AccountDetail() {
             {review === 'Confirmed Fraud' && (
               <Field label="Confirmed by">{account.fraud_confirmed_by} · {eventTime(account.fraud_confirmed_at)}</Field>
             )}
-            <Field label="Rule-based risk level"><RiskChip level={account.risk_level} /></Field>
+            <Field label="Risk level (computed by the rule engine)"><RiskChip level={account.risk_level} /></Field>
             <Field label="ML fraud score">{pct(account.fraud_score)}</Field>
             <Typography variant="caption" color="text.secondary">
               Suspicious comes from the rules (Medium/High risk) or an ML score of 80% or more and needs an analyst's
@@ -264,6 +264,11 @@ export default function AccountDetail() {
             <Typography variant="h6" sx={{ mb: 1.5 }}>Account holder</Typography>
             <Field label="Email">{account.email || '—'}</Field>
             <Field label="Phone">{account.phone || '—'}</Field>
+            <Field label="Onboarding risk category (KYC)">
+              {account.onboarding_risk_category
+                ? <Chip size="small" variant="outlined" label={account.onboarding_risk_category} />
+                : <Typography variant="body2" color="text.secondary">Not assessed</Typography>}
+            </Field>
             <Field label="Opened">{txnTime(account.created_at)}</Field>
           </Paper>
 

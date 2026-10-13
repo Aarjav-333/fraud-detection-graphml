@@ -25,10 +25,13 @@ class Account(Base):
     phone = Column(String)
     account_type = Column(String)                 # savings / current / wallet ...
     created_at = Column(DateTime, default=datetime.utcnow)
-    risk_level = Column(String, default="Low")    # Low / Medium / High (system output)
+    risk_level = Column(String, default="Low")    # Low / Medium / High, set only by the rule engine
     fraud_score = Column(Float, default=0.0)       # system output
     is_fraud = Column(Integer, default=0)          # ground-truth label (from synthetic data)
     is_active = Column(Integer, default=1)         # 1 = active, 0 = deactivated
+    # Low / Medium / High assessed by a person at onboarding (KYC), or None. Kept
+    # apart from risk_level and never used by the rules, the models or fraud_status.
+    onboarding_risk_category = Column(String)
     # Manual fraud review by an analyst: None, "Under Review" or "Confirmed Fraud".
     # Kept apart from fraud_score / risk_level / is_fraud, so a model or rule never
     # counts as a confirmation. History lives in account_status_events.

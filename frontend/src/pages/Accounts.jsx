@@ -10,7 +10,7 @@ import SearchIcon from '@mui/icons-material/Search'
 import EditIcon from '@mui/icons-material/Edit'
 import BlockIcon from '@mui/icons-material/Block'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
-import RiskChip from '../components/RiskChip'
+import RiskChip, { RISK_LEVELS } from '../components/RiskChip'
 import FraudStatusChip, { FRAUD_STATUSES } from '../components/FraudStatusChip'
 import ConfirmDialog from '../components/ConfirmDialog'
 import {
@@ -18,8 +18,24 @@ import {
 } from '../api/accounts'
 
 const ACCOUNT_TYPES = ['Savings', 'Current', 'Wallet', 'Business']
-const RISK_LEVELS = ['Low', 'Medium', 'High']
-const EMPTY = { customer_name: '', email: '', phone: '', account_type: 'Savings', risk_level: 'Low' }
+// onboarding_risk_category is a manual KYC assessment; the risk level itself is computed by the rule engine
+const EMPTY = { customer_name: '', email: '', phone: '', account_type: 'Savings', onboarding_risk_category: '' }
+
+// The API's error as text: a message string, or FastAPI's list of validation errors.
+// Anything else falls back to a generic message rather than being rendered as-is.
+function errorText(err, fallback) {
+  const detail = err?.response?.data?.detail
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    const parts = detail.filter((d) => typeof d?.msg === 'string').map((d) => {
+      const field = Array.isArray(d.loc) ? d.loc[d.loc.length - 1] : null
+      const msg = d.msg.replace(/^Value error, /, '')
+      return d.type === 'extra_forbidden' && typeof field === 'string' ? `${field}: ${msg}` : msg
+    })
+    if (parts.length) return parts.join(' ')
+  }
+  return fallback
+}
 
 export default function Accounts() {
   const [rows, setRows] = useState([])
@@ -62,22 +78,23 @@ export default function Accounts() {
   function openEdit(row) {
     setForm({
       customer_name: row.customer_name || '', email: row.email || '', phone: row.phone || '',
-      account_type: row.account_type || 'Savings', risk_level: row.risk_level || 'Low',
+      account_type: row.account_type || 'Savings', onboarding_risk_category: row.onboarding_risk_category || '',
     })
     setFormError('')
-    setDialog({ open: true, mode: 'edit', uid: row.account_uid })
+    setDialog({ open: true, mode: 'edit', uid: row.account_uid, riskLevel: row.risk_level || 'Low' })
   }
 
   async function handleSave() {
     setFormError('')
     if (!form.customer_name.trim()) { setFormError('Customer name is required'); return }
+    const body = { ...form, onboarding_risk_category: form.onboarding_risk_category || null }
     try {
-      if (dialog.mode === 'add') await createAccount(form)
-      else await updateAccount(dialog.uid, form)
-      setDialog({ open: false, mode: 'add', uid: null })
+      if (dialog.mode === 'add') await createAccount(body)
+      else await updateAccount(dialog.uid, body)
+      setDialog((d) => ({ ...d, open: false }))   // keep its content while it fades out
       fetchData()
     } catch (err) {
-      setFormError(err?.response?.data?.detail || 'Could not save account')
+      setFormError(errorText(err, 'Could not save account'))
     }
   }
 
@@ -130,7 +147,11 @@ export default function Accounts() {
                 <TableCell>Email</TableCell>
                 <TableCell>Phone</TableCell>
                 <TableCell>Type</TableCell>
-                <TableCell>Risk</TableCell>
+                <TableCell>
+                  <Tooltip title="Computed by the rule engine each time Rule Detection runs">
+                    <span>Risk (rules)</span>
+                  </Tooltip>
+                </TableCell>
                 <TableCell>Fraud status</TableCell>
                 <TableCell>Status</TableCell>
                 <TableCell align="right">Actions</TableCell>
@@ -191,10 +212,25 @@ export default function Accounts() {
               onChange={(e) => setForm({ ...form, account_type: e.target.value })}>
               {ACCOUNT_TYPES.map((t) => <MenuItem key={t} value={t}>{t}</MenuItem>)}
             </TextField>
-            <TextField select label="Risk level" value={form.risk_level}
-              onChange={(e) => setForm({ ...form, risk_level: e.target.value })}>
+            <TextField select label="Onboarding risk category (KYC)" value={form.onboarding_risk_category}
+              SelectProps={{ displayEmpty: true }} InputLabelProps={{ shrink: true }}
+              onChange={(e) => setForm({ ...form, onboarding_risk_category: e.target.value })}
+              helperText="Your assessment when the customer was onboarded. Kept separate from the computed risk level below.">
+              <MenuItem value=""><em>Not assessed</em></MenuItem>
               {RISK_LEVELS.map((t) => <MenuItem key={t} value={t}>{t}</MenuItem>)}
             </TextField>
+            <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: 'action.hover' }}>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                Risk level — computed by the rule engine (read-only)
+              </Typography>
+              <Stack direction="row" spacing={1.5} alignItems="center">
+                <RiskChip level={dialog.mode === 'add' ? 'Low' : dialog.riskLevel} />
+                <Typography variant="caption" color="text.secondary">
+                  {dialog.mode === 'add' ? 'New accounts start at Low. ' : ''}
+                  Rule Detection raises it to Medium or High when the account's transactions match the fraud rules.
+                </Typography>
+              </Stack>
+            </Box>
           </Stack>
         </DialogContent>
         <DialogActions>

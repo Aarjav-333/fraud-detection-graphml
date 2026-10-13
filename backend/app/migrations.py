@@ -39,10 +39,15 @@ def _transaction_idempotency_key(conn) -> None:
                       "ON transactions (idempotency_key)"))
 
 
+def _account_onboarding_risk_category(conn) -> None:
+    _add_column(conn, "accounts", "onboarding_risk_category", "VARCHAR")
+
+
 # (version, migration) - append only; never edit or reorder one that has shipped
 MIGRATIONS = [
     ("2026_10_13_account_review_status", _account_review_status),
     ("2026_10_13_transaction_idempotency_key", _transaction_idempotency_key),
+    ("2026_10_14_account_onboarding_risk_category", _account_onboarding_risk_category),
 ]
 
 
