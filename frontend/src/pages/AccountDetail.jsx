@@ -13,8 +13,9 @@ import RiskChip from '../components/RiskChip'
 import FraudStatusChip from '../components/FraudStatusChip'
 import { useAuth } from '../context/AuthContext'
 import { isFraudAnalyst, useNotifications } from '../context/NotificationsContext'
+import { useSystem } from '../context/SystemContext'
 import { getInvestigation, retryEmail, reviewAccount } from '../api/investigation'
-import { eventTime, money, pct, txnTime } from '../utils/format'
+import { eventTime, money, txnTime } from '../utils/format'
 
 const EMAIL_STATUS = {
   sent: { label: 'Sent', color: 'success' },
@@ -92,6 +93,7 @@ export default function AccountDetail() {
   const highlight = params.get('txn')
   const { user } = useAuth()
   const analyst = isFraudAnalyst(user)
+  const { modelScore } = useSystem()
   const notifications = useNotifications()
 
   const [data, setData] = useState(null)
@@ -107,25 +109,36 @@ export default function AccountDetail() {
   const [retrying, setRetrying] = useState(false)
   const polls = useRef(0)
   const highlightRow = useRef(null)
+  const latest = useRef(0)
 
   const load = useCallback(async (quiet = false) => {
+    const request = ++latest.current
     if (!quiet) setLoading(true)
     try {
-      setData(await getInvestigation(uid))
+      const next = await getInvestigation(uid)
+      if (request !== latest.current) return   // a newer load (or another account) is on its way
+      setData(next)
       setError('')
     } catch (err) {
+      if (request !== latest.current) return
       const status = err?.response?.status
       setError(status === 403 ? 'Investigating accounts needs a fraud analyst account.'
         : status === 404 ? `Account ${uid} was not found.`
           : 'Could not load this account. Is the backend running?')
     } finally {
-      setLoading(false)
+      if (request === latest.current) setLoading(false)
     }
   }, [uid])
 
   useEffect(() => { load() }, [load])
-  // a live notification (e.g. this account just made a transaction): refresh quietly
-  useEffect(() => { if (notifications?.version) load(true) }, [notifications?.version, load])
+  // a live notification since then (e.g. this account just made a transaction): refresh quietly
+  const version = notifications?.version
+  const seenVersion = useRef(version)
+  useEffect(() => {
+    if (version === seenVersion.current) return
+    seenVersion.current = version
+    load(true)
+  }, [version, load])
   // the email is sent in the background after a confirmation: follow it until it settles
   const emailPending = data?.emails?.some((e) => e.status === 'pending')
   useEffect(() => {
@@ -253,7 +266,7 @@ export default function AccountDetail() {
               <Field label="Confirmed by">{account.fraud_confirmed_by} · {eventTime(account.fraud_confirmed_at)}</Field>
             )}
             <Field label="Risk level (computed by the rule engine)"><RiskChip level={account.risk_level} /></Field>
-            <Field label="ML fraud score">{pct(account.fraud_score)}</Field>
+            <Field label="ML fraud score">{modelScore(account.fraud_score, 1, 'Not computed in the standalone demo')}</Field>
             <Typography variant="caption" color="text.secondary">
               Suspicious comes from the rules (Medium/High risk) or an ML score of 80% or more and needs an analyst's
               review. Only an analyst's confirmation makes an account Confirmed Fraud.

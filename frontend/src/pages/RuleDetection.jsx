@@ -7,11 +7,13 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow'
 import GavelIcon from '@mui/icons-material/Gavel'
 import { useNavigate } from 'react-router-dom'
 import { getRulesStatus, runRules } from '../api/rules'
+import { useSystem } from '../context/SystemContext'
 
 // Direction notation appended to the fan-in / fan-out rule labels in "Hits per rule".
 const RULE_NOTATION = { fan_in: ' (M → 1)', fan_out: ' (1 → M)' }
 
 export default function RuleDetection() {
+  const { standalone } = useSystem()
   const navigate = useNavigate()
   const [status, setStatus] = useState(null)
   const [result, setResult] = useState(null)
@@ -123,8 +125,17 @@ export default function RuleDetection() {
             </Grid>
             <Grid item xs={12} md={6}>
               <Paper sx={{ p: 2, height: '100%' }}>
-                <Typography variant="h6" sx={{ mb: 1 }}>Evaluation vs ground truth</Typography>
-                {evalData && (
+                <Typography variant="h6" sx={{ mb: 1 }}>
+                  {standalone ? 'Scenario coverage' : 'Evaluation vs ground truth'}
+                </Typography>
+                {standalone && (
+                  <Typography variant="body2">
+                    Precision and recall against fraud labels mean nothing on a 22-transaction scripted
+                    scenario. The <Button size="small" onClick={() => navigate('/demo')}>Demo Scenario</Button> page
+                    shows which stage each flagged transaction belongs to and which rules caught it.
+                  </Typography>
+                )}
+                {evalData && !standalone && (
                   <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
                     <Chip label={`Precision ${(evalData.precision * 100).toFixed(1)}%`} color="success" variant="outlined" />
                     <Chip label={`Recall ${(evalData.recall * 100).toFixed(1)}%`} color="success" variant="outlined" />
@@ -133,9 +144,11 @@ export default function RuleDetection() {
                     <Chip label={`FN ${evalData.false_negatives}`} variant="outlined" />
                   </Stack>
                 )}
-                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1.5 }}>
-                  Measured against the planted fraud labels in the synthetic dataset.
-                </Typography>
+                {!standalone && (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1.5 }}>
+                    Measured against the planted fraud labels in the synthetic dataset.
+                  </Typography>
+                )}
               </Paper>
             </Grid>
           </Grid>

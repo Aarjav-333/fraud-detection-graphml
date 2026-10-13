@@ -462,6 +462,53 @@ changes. While it runs, planting again and `--cleanup` refuse to start. Planting
 replaces the demo with a fresh copy of your current data; if that fails or is interrupted,
 `--serve` refuses the unfinished copy until you plant again.
 
+### Standalone demo: the 22 transactions on their own
+
+For presenting the scenario without thousands of unrelated records, add `--standalone`.
+This builds a separate database in `backend/data/demo_standalone/` that holds exactly the
+scenario: 22 accounts (9 feeders, 1 mule, 1 collector, 2 shells, 9 cash-outs), 22
+transactions and the admin user from your settings. It never reads or copies your data.
+
+```bash
+cd backend
+python -m scripts.demo_scenario --standalone               # build it and run detection (a few seconds)
+python -m scripts.demo_scenario --plant-only --standalone  # build it; run the detection steps yourself in the UI
+python -m scripts.demo_scenario --serve --standalone       # serve it on port 8000 (stop your normal backend first)
+python -m scripts.demo_scenario --cleanup --standalone     # delete it (nothing else)
+```
+
+The real rule engine, graph analysis, alert generation and ring detection run on it,
+with nothing assumed. Every scripted transaction is flagged, each stage triggers the
+rules it was designed for (R3 and R4, R1, R6, R2 and R5), and ring detection finds one
+ring of all 22 accounts with the collector at its centre. ML and GNN training are
+deliberately off, because 22 scripted accounts are far too few to train or fairly
+evaluate a model. The ML pages explain this, and precision, recall and model scores are
+replaced by the scenario's detection coverage.
+
+**Presenting it in the UI** (served with `--serve --standalone`; a *Standalone Demo
+Mode* badge shows in the top bar):
+1. **Demo Scenario** (new in the sidebar): coverage at a glance, the four stages with
+   every transaction and the rules it triggered, the fraud network, the detected ring
+   and all 22 accounts. With `--plant-only`, run Rule Detection → Graph Analysis →
+   Features → Fraud Alerts → Fraud Rings first and watch it fill in.
+2. Click any account, e.g. **DEMO-COLLECTOR**, to investigate it, then **Confirm fraud &
+   flag account**.
+3. Back on Demo Scenario, use **Try the real-time alert** (or Transactions → Add
+   transaction) to record a new transfer from that account. The bell and an on-screen
+   alert fire as it is recorded.
+4. Fraud Rings shows the ring's money flow; Reports offers a scenario CSV and a PDF
+   summary with the stage coverage.
+
+It has its own lock and folder, so it works independently of the full demo copy above;
+the two only share port 8000 when served.
+
+<table>
+  <tr>
+    <td width="62%"><b>Demo Scenario page</b><br><img src="docs/screenshots/demo-scenario.png" alt="Demo Scenario page"></td>
+    <td width="38%"><b>The fraud network</b><br><img src="docs/screenshots/demo-network.png" alt="Demo fraud network"></td>
+  </tr>
+</table>
+
 ## Deployment
 
 The backend runs on **Render** (free tier, `render.yaml` Blueprint) and the frontend
@@ -501,6 +548,8 @@ Every route except `POST /api/auth/login` and the `/` health check needs a JWT
 | `/api/reports` | CSV exports, PDF summary |
 | `/api/accounts/{id}/investigation`, `/review`, `/emails/{id}/retry` | an account's evidence and history; mark under review / confirm fraud / clear; retry a holder email* |
 | `/api/notifications` | history with read state, unread count, mark read / unread / all read; live stream at `/api/notifications/ws` (WebSocket)* |
+| `/api/demo/scenario` | the demo scenario's stages, rule hits, accounts, rings and network, as detection recorded them |
+| `/api/system/info` | whether this backend is the standalone demo (public; no data) |
 
 \* fraud analysts only (`admin` or `analyst` role).
 
@@ -516,6 +565,7 @@ backend/
                     alerts, cases, users, account status history, notifications,
                     notification reads, email deliveries
     services/       fraud review, analyst notifications (+ live broker), account-holder email
+    demo/           the demo scenario as data, and its detection-coverage report
     schemas/        request/response models
     core/           password hashing, JWTs, money/date formatting
     config.py       settings (.env), production safety checks
@@ -584,3 +634,4 @@ DEPLOYMENT.md       deployment guide
 - [x] Fraud review: manual confirmation with audit trail and roles
 - [x] Real-time WebSocket alerts for confirmed-fraud account activity
 - [x] Automated account-holder email after confirmation (SMTP, logged, retried)
+- [x] Standalone demo: the 22 scripted transactions in a database of their own

@@ -6,7 +6,7 @@ from app.database import engine
 from app.migrations import run_migrations_safely
 from app.api import (
     auth, accounts, transactions, preprocessing, rules, graph, features,
-    ml, gnn, alerts, rings, cases, dashboard, reports, investigation, notifications,
+    ml, gnn, alerts, rings, cases, dashboard, reports, investigation, notifications, system, demo,
 )
 
 # Adds any table or column introduced since the database was first set up;
@@ -39,6 +39,8 @@ app.include_router(dashboard.router)
 app.include_router(reports.router)
 app.include_router(investigation.router)
 app.include_router(notifications.router)
+app.include_router(system.router)
+app.include_router(demo.router)
 
 
 @app.get("/")

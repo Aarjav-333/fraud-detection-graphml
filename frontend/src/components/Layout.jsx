@@ -1,7 +1,7 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import {
   AppBar, Box, Drawer, List, ListItemButton, ListItemIcon, ListItemText,
-  Toolbar, Typography, Divider, Avatar, Button, Chip,
+  Toolbar, Typography, Divider, Avatar, Button, Chip, Tooltip,
 } from '@mui/material'
 import DashboardIcon from '@mui/icons-material/Dashboard'
 import PeopleIcon from '@mui/icons-material/People'
@@ -20,7 +20,9 @@ import ShieldIcon from '@mui/icons-material/Shield'
 import LogoutIcon from '@mui/icons-material/Logout'
 import InsightsIcon from '@mui/icons-material/Insights'
 import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive'
+import ScienceIcon from '@mui/icons-material/Science'
 import NotificationBell from './NotificationBell'
+import { useSystem } from '../context/SystemContext'
 import { isFraudAnalyst } from '../context/NotificationsContext'
 import { useAuth } from '../context/AuthContext'
 import { SIDEBAR_BG, SIDEBAR_FG } from '../theme'
@@ -29,6 +31,7 @@ const DRAWER_WIDTH = 244
 
 const NAV = [
   { label: 'Dashboard', path: '/', icon: <DashboardIcon /> },
+  { label: 'Demo Scenario', path: '/demo', icon: <ScienceIcon />, standaloneOnly: true },
   { label: 'Accounts', path: '/accounts', icon: <PeopleIcon /> },
   { label: 'Transactions', path: '/transactions', icon: <ReceiptLongIcon /> },
   { label: 'Data Quality', path: '/data-quality', icon: <FactCheckIcon /> },
@@ -50,6 +53,7 @@ export default function Layout() {
   const location = useLocation()
   const { user, logout } = useAuth()
   const analyst = isFraudAnalyst(user)
+  const { standalone } = useSystem()
   const role = user?.role ? user.role[0].toUpperCase() + user.role.slice(1) : 'User'
 
   return (
@@ -81,7 +85,7 @@ export default function Layout() {
         </Toolbar>
         <Divider sx={{ borderColor: '#1e293b' }} />
         <List sx={{ px: 1.5, pt: 1.5 }}>
-          {NAV.filter((item) => analyst || !item.analystOnly).map((item) => {
+          {NAV.filter((item) => (analyst || !item.analystOnly) && (standalone || !item.standaloneOnly)).map((item) => {
             const active = item.path === '/' ? location.pathname === '/' : location.pathname.startsWith(item.path)
             return (
               <ListItemButton
@@ -112,6 +116,12 @@ export default function Layout() {
           sx={{ bgcolor: 'background.paper', color: 'text.primary', borderBottom: '1px solid #e5e7eb' }}
         >
           <Toolbar sx={{ justifyContent: 'flex-end', gap: 2 }}>
+            {standalone && (
+              <Tooltip title="Only the 22 scripted demo accounts and transactions are in this database. ML/GNN training needs the main dataset.">
+                <Chip icon={<ScienceIcon />} color="secondary" label="Standalone Demo Mode"
+                  onClick={() => navigate('/demo')} sx={{ mr: 'auto', fontWeight: 600 }} />
+              </Tooltip>
+            )}
             <NotificationBell />
             <Chip size="small" label={role} color="primary" variant="outlined" />
             <Avatar sx={{ width: 32, height: 32, bgcolor: 'primary.main', fontSize: 14 }}>

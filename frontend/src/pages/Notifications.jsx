@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link as RouterLink, useNavigate } from 'react-router-dom'
 import {
   Alert, Box, Button, Chip, IconButton, LinearProgress, Link, Paper, Stack, Table, TableBody, TableCell,
@@ -9,10 +9,12 @@ import MarkEmailUnreadOutlinedIcon from '@mui/icons-material/MarkEmailUnreadOutl
 import { listNotifications } from '../api/notifications'
 import { notificationLink, useNotifications } from '../context/NotificationsContext'
 import FraudStatusChip from '../components/FraudStatusChip'
-import { eventTime, money, pct, txnTime } from '../utils/format'
+import { useSystem } from '../context/SystemContext'
+import { eventTime, money, txnTime } from '../utils/format'
 
 export default function Notifications() {
   const live = useNotifications()
+  const { modelScore } = useSystem()
   const navigate = useNavigate()
   const [filter, setFilter] = useState('all')
   const [page, setPage] = useState(0)
@@ -21,22 +23,29 @@ export default function Notifications() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+  const latest = useRef(0)
+
   const load = useCallback(async () => {
+    const request = ++latest.current
     setLoading(true)
     try {
-      setData(await listNotifications({ skip: page * rowsPerPage, limit: rowsPerPage, unreadOnly: filter === 'unread' }))
+      const next = await listNotifications({ skip: page * rowsPerPage, limit: rowsPerPage, unreadOnly: filter === 'unread' })
+      if (request !== latest.current) return   // a newer load (or another page) is on its way
+      setData(next)
       setError('')
     } catch (err) {
+      if (request !== latest.current) return
       setError(err?.response?.status === 403
         ? 'Fraud notifications are for fraud analyst accounts.'
         : 'Could not load notifications. Is the backend running?')
     } finally {
-      setLoading(false)
+      if (request === latest.current) setLoading(false)
     }
   }, [page, rowsPerPage, filter])
 
-  useEffect(() => { load() }, [load])
-  useEffect(() => { if (live?.version) load() }, [live?.version, load])   // new or read elsewhere
+  // On arrival, and again when notifications arrive or are read elsewhere
+  const version = live?.version
+  useEffect(() => { load() }, [load, version])
 
   async function toggleRead(n) {
     if (n.read) await live.markUnread(n.id)
@@ -114,7 +123,7 @@ export default function Notifications() {
                   <TableCell align="right">{money(n.amount)}</TableCell>
                   <TableCell>{txnTime(n.transaction_time)}</TableCell>
                   <TableCell><FraudStatusChip status={n.account_status} /></TableCell>
-                  <TableCell align="right">{pct(n.risk_score)}</TableCell>
+                  <TableCell align="right">{modelScore(n.risk_score)}</TableCell>
                   <TableCell>{eventTime(n.created_at)}</TableCell>
                 </TableRow>
               ))}

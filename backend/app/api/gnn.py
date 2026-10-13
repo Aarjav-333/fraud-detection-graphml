@@ -2,6 +2,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from app.api.system import ML_NEEDS_MAIN_DATASET
+from app.config import settings
 from app.database import get_db
 from app.deps import get_current_user, require_fraud_analyst
 from app.ml import gnn
@@ -17,6 +19,8 @@ class TrainRequest(BaseModel):
 
 @router.post("/train")
 def train(req: TrainRequest, db: Session = Depends(get_db)):
+    if settings.is_standalone_demo:
+        raise HTTPException(status_code=409, detail=ML_NEEDS_MAIN_DATASET)
     try:
         return gnn.train(db, source=req.source, model_type=req.model, epochs=req.epochs)
     except gnn.GNNDepsMissing as exc:

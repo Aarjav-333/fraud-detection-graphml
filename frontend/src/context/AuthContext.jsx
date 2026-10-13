@@ -1,11 +1,13 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { login as apiLogin, getMe } from '../api/auth'
+import { useSystem } from './SystemContext'
 
 const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
+  const { refresh: refreshSystem } = useSystem()
 
   // On first load, if we already have a token, restore the session.
   useEffect(() => {
@@ -25,6 +27,7 @@ export function AuthProvider({ children }) {
     localStorage.setItem('token', data.access_token)
     const me = await getMe()
     setUser(me)
+    refreshSystem()   // a new login can be to a different backend
   }
 
   function logout() {

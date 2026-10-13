@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from app.api.system import ML_NEEDS_MAIN_DATASET
+from app.config import settings
 from app.database import get_db
 from app.deps import get_current_user
 from app.ml import baseline
@@ -10,6 +12,8 @@ router = APIRouter(prefix="/api/ml", tags=["ml"], dependencies=[Depends(get_curr
 
 @router.post("/train")
 def train(db: Session = Depends(get_db)):
+    if settings.is_standalone_demo:
+        raise HTTPException(status_code=409, detail=ML_NEEDS_MAIN_DATASET)
     try:
         return baseline.train_and_score(db)
     except ValueError as exc:

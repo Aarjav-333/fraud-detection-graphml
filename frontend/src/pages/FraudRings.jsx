@@ -1,12 +1,13 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Box, Typography, Paper, Grid, Button, Stack, Chip, Alert, LinearProgress,
   Table, TableContainer, TableHead, TableBody, TableRow, TableCell, TablePagination,
 } from '@mui/material'
 import GroupsIcon from '@mui/icons-material/Groups'
 import RadarIcon from '@mui/icons-material/Radar'
-import ForceGraph2D from 'react-force-graph-2d'
 import RiskChip from '../components/RiskChip'
+import MoneyFlowGraph from '../components/MoneyFlowGraph'
+import { useSystem } from '../context/SystemContext'
 import { getRingsStatus, detectRings, getRing } from '../api/rings'
 
 const ROLE_COLOR = { main: '#dc2626', withdrawal: '#7c3aed', source: '#d97706' }
@@ -20,16 +21,9 @@ export default function FraudRings() {
   const [page, setPage] = useState(0)
   const [selected, setSelected] = useState(null)   // full ring with nodes/links
   const [loadingRing, setLoadingRing] = useState(false)
-  const graphBoxRef = useRef(null)
-  const [graphWidth, setGraphWidth] = useState(600)
+  const { standalone, hasModelScores, modelScore } = useSystem()
 
   useEffect(() => { getRingsStatus().then(setStatus).catch(() => {}) }, [])
-  useEffect(() => {
-    const measure = () => graphBoxRef.current && setGraphWidth(graphBoxRef.current.offsetWidth - 4)
-    measure()
-    window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
-  }, [selected])
 
   async function handleDetect() {
     setDetecting(true); setError(''); setSelected(null)
@@ -110,7 +104,7 @@ export default function FraudRings() {
                         <TableCell align="right">{r.size}</TableCell>
                         <TableCell sx={{ fontFamily: 'monospace' }}>{r.main_account}</TableCell>
                         <TableCell align="right">{money(r.total_flow)}</TableCell>
-                        <TableCell align="right">{(r.avg_fraud_score * 100).toFixed(0)}%</TableCell>
+                        <TableCell align="right">{modelScore(r.avg_fraud_score, 0)}</TableCell>
                         <TableCell sx={{ whiteSpace: 'nowrap' }}>
                           {r.rules == null ? '—' : (r.rules.join(' ') || 'none')}
                         </TableCell>
@@ -146,44 +140,21 @@ export default function FraudRings() {
                     <RiskChip level={selected.risk} />
                   </Stack>
                   {loadingRing ? <LinearProgress /> : (
-                    <Box ref={graphBoxRef}
-                      sx={{ border: '1px solid #e5e7eb', borderRadius: 2, overflow: 'hidden', bgcolor: '#0f172a' }}>
-                      <ForceGraph2D
-                        graphData={{ nodes: selected.nodes.map(n => ({ ...n })), links: selected.links.map(l => ({ ...l })) }}
-                        width={graphWidth} height={430}
-                        backgroundColor="#0f172a"
-                        nodeLabel={(n) => `${n.id} · ${n.name}\nrole: ${ROLE_LABEL[n.role]}\nscore ${(n.fraud_score * 100).toFixed(0)}% · received ${money(n.received)} · sent ${money(n.sent)}`}
-                        nodeCanvasObject={(node, ctx, scale) => {
-                          const r = node.role === 'main' ? 10 : node.role === 'withdrawal' ? 8 : 5
-                          ctx.beginPath()
-                          ctx.arc(node.x, node.y, r, 0, 2 * Math.PI)
-                          ctx.fillStyle = ROLE_COLOR[node.role] || '#64748b'
-                          ctx.fill()
-                          if (node.role !== 'source' || scale > 2.2) {
-                            ctx.font = `${10 / scale}px Inter`
-                            ctx.fillStyle = '#cbd5e1'
-                            ctx.textAlign = 'center'
-                            ctx.fillText(node.id, node.x, node.y - r - 2 / scale)
-                          }
-                        }}
-                        linkColor={() => 'rgba(148,163,184,0.4)'}
-                        linkDirectionalArrowLength={4.5}
-                        linkDirectionalArrowRelPos={1}
-                        linkDirectionalParticles={2}
-                        linkDirectionalParticleSpeed={0.004}
-                        linkWidth={(l) => Math.min(1 + Math.log10(1 + l.amount / 10000), 4)}
-                        linkLabel={(l) => `${money(l.amount)} in ${l.count} txn(s)`}
-                        cooldownTicks={90}
-                      />
-                      <Stack direction="row" spacing={2} sx={{ p: 1.5, bgcolor: '#1e293b', flexWrap: 'wrap' }}>
-                        <Chip size="small" sx={{ bgcolor: ROLE_COLOR.main, color: '#fff' }} label="Main (receiver)" />
-                        <Chip size="small" sx={{ bgcolor: ROLE_COLOR.withdrawal, color: '#fff' }} label="Withdrawal" />
-                        <Chip size="small" sx={{ bgcolor: ROLE_COLOR.source, color: '#fff' }} label="Source accounts" />
-                        <Typography variant="caption" sx={{ color: '#94a3b8', alignSelf: 'center' }}>
-                          Moving dots show money direction
-                        </Typography>
-                      </Stack>
-                    </Box>
+                    <MoneyFlowGraph
+                      nodes={selected.nodes} links={selected.links}
+                      colorOf={(n) => ROLE_COLOR[n.role]}
+                      radiusOf={(n) => (n.role === 'main' ? 10 : n.role === 'withdrawal' ? 8 : 5)}
+                      showLabel={(n, scale) => n.role !== 'source' || scale > 2.2}
+                      nodeTitle={(n) => `${n.id} · ${n.name}
+role: ${ROLE_LABEL[n.role]}
+`
+                        + `${hasModelScores ? `score ${modelScore(n.fraud_score, 0)} · ` : ''}received ${money(n.received)} · sent ${money(n.sent)}`}
+                      legend={[
+                        { label: 'Main (receiver)', color: ROLE_COLOR.main },
+                        { label: 'Withdrawal', color: ROLE_COLOR.withdrawal },
+                        { label: 'Source accounts', color: ROLE_COLOR.source },
+                      ]}
+                    />
                   )}
                 </Paper>
               </Grid>
@@ -194,7 +165,9 @@ export default function FraudRings() {
 
       {!status?.has_run && !detecting && (
         <Alert severity="info">
-          Run <b>Rule Detection</b> and <b>ML Scoring</b> first, then click <b>Detect fraud rings</b>.
+          {standalone
+            ? <>Run <b>Rule Detection</b> first, then click <b>Detect fraud rings</b>.</>
+            : <>Run <b>Rule Detection</b> and <b>ML Scoring</b> first, then click <b>Detect fraud rings</b>.</>}
         </Alert>
       )}
     </Box>

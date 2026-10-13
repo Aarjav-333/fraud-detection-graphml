@@ -6,6 +6,7 @@ import {
 import BuildIcon from '@mui/icons-material/Build'
 import TableChartIcon from '@mui/icons-material/TableChart'
 import { buildFeatures, getFeaturesStatus, previewFeatures } from '../api/features'
+import { useSystem } from '../context/SystemContext'
 
 const NUMERIC_COLS = [
   'total_sent', 'total_received', 'txn_count_sent', 'txn_count_received',
@@ -15,11 +16,13 @@ const NUMERIC_COLS = [
 ]
 
 export default function Features() {
+  const { hasLabels } = useSystem()   // no ground-truth labels in the standalone demo
   const [status, setStatus] = useState(null)
   const [building, setBuilding] = useState(false)
   const [error, setError] = useState('')
   const [rows, setRows] = useState([])
-  const [fraudOnly, setFraudOnly] = useState(false)
+  const [fraudOnlySwitch, setFraudOnly] = useState(false)
+  const fraudOnly = hasLabels && fraudOnlySwitch
   const [loadingRows, setLoadingRows] = useState(false)
 
   useEffect(() => { getFeaturesStatus().then(setStatus).catch(() => {}) }, [])
@@ -73,14 +76,25 @@ export default function Features() {
                 <Typography variant="h4">{status.feature_list?.length}</Typography>
                 <Typography variant="body2" color="text.secondary">Features (columns)</Typography>
               </Grid>
-              <Grid item xs={6} sm={3}>
-                <Typography variant="h4" color="error.main">{status.fraud_accounts?.toLocaleString('en-IN')}</Typography>
-                <Typography variant="body2" color="text.secondary">Fraud accounts (labels)</Typography>
-              </Grid>
-              <Grid item xs={6} sm={3}>
-                <Typography variant="h4">{(status.fraud_ratio * 100).toFixed(1)}%</Typography>
-                <Typography variant="body2" color="text.secondary">Class imbalance ratio</Typography>
-              </Grid>
+              {hasLabels ? (
+                <>
+                  <Grid item xs={6} sm={3}>
+                    <Typography variant="h4" color="error.main">{status.fraud_accounts?.toLocaleString('en-IN')}</Typography>
+                    <Typography variant="body2" color="text.secondary">Fraud accounts (labels)</Typography>
+                  </Grid>
+                  <Grid item xs={6} sm={3}>
+                    <Typography variant="h4">{(status.fraud_ratio * 100).toFixed(1)}%</Typography>
+                    <Typography variant="body2" color="text.secondary">Class imbalance ratio</Typography>
+                  </Grid>
+                </>
+              ) : (
+                <Grid item xs={12} sm={6}>
+                  <Typography variant="h4">—</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Fraud labels: none in the standalone demo, so no model is trained on these features
+                  </Typography>
+                </Grid>
+              )}
             </Grid>
           </Paper>
 
@@ -104,10 +118,12 @@ export default function Features() {
               <Paper sx={{ p: 2, height: '100%' }}>
                 <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
                   <Typography variant="h6">Sample rows</Typography>
-                  <FormControlLabel
-                    control={<Switch checked={fraudOnly} onChange={(e) => setFraudOnly(e.target.checked)} />}
-                    label="Fraud accounts only"
-                  />
+                  {hasLabels && (
+                    <FormControlLabel
+                      control={<Switch checked={fraudOnlySwitch} onChange={(e) => setFraudOnly(e.target.checked)} />}
+                      label="Fraud accounts only"
+                    />
+                  )}
                 </Stack>
                 {loadingRows ? <LinearProgress /> : (
                   <Box sx={{ overflowX: 'auto' }}>
@@ -116,7 +132,7 @@ export default function Features() {
                         <TableRow>
                           <TableCell>account</TableCell>
                           {NUMERIC_COLS.slice(0, 8).map((c) => <TableCell key={c} align="right">{c}</TableCell>)}
-                          <TableCell align="center">label</TableCell>
+                          {hasLabels && <TableCell align="center">label</TableCell>}
                         </TableRow>
                       </TableHead>
                       <TableBody>
@@ -126,11 +142,13 @@ export default function Features() {
                             {NUMERIC_COLS.slice(0, 8).map((c) => (
                               <TableCell key={c} align="right">{Number(r[c]).toLocaleString('en-IN')}</TableCell>
                             ))}
-                            <TableCell align="center">
-                              {r.is_fraud
-                                ? <Chip size="small" label="Fraud" color="error" />
-                                : <Chip size="small" label="Legit" variant="outlined" />}
-                            </TableCell>
+                            {hasLabels && (
+                              <TableCell align="center">
+                                {r.is_fraud
+                                  ? <Chip size="small" label="Fraud" color="error" />
+                                  : <Chip size="small" label="Legit" variant="outlined" />}
+                              </TableCell>
+                            )}
                           </TableRow>
                         ))}
                       </TableBody>

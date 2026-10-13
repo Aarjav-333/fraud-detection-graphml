@@ -10,6 +10,7 @@ import SearchIcon from '@mui/icons-material/Search'
 import DeleteIcon from '@mui/icons-material/Delete'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
 import ConfirmDialog from '../components/ConfirmDialog'
+import { useSystem } from '../context/SystemContext'
 import {
   listTransactions, createTransaction, deleteTransaction, uploadTransactionsCSV,
 } from '../api/transactions'
@@ -19,13 +20,15 @@ const EMPTY = { sender_uid: '', receiver_uid: '', amount: '', txn_type: 'transfe
 const money = (n) => '₹' + Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 })
 
 export default function Transactions() {
+  const { hasLabels } = useSystem()   // no ground-truth labels in the standalone demo
   const [rows, setRows] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(0)
   const [rowsPerPage, setRowsPerPage] = useState(25)
   const [search, setSearch] = useState('')
   const [q, setQ] = useState('')
-  const [fraudOnly, setFraudOnly] = useState(false)
+  const [fraudOnlySwitch, setFraudOnly] = useState(false)
+  const fraudOnly = hasLabels && fraudOnlySwitch
   const [loading, setLoading] = useState(false)
 
   const [addOpen, setAddOpen] = useState(false)
@@ -127,10 +130,12 @@ export default function Transactions() {
             onChange={(e) => setSearch(e.target.value)} sx={{ width: 360 }}
             InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
           />
-          <FormControlLabel
-            control={<Switch checked={fraudOnly} onChange={(e) => { setPage(0); setFraudOnly(e.target.checked) }} />}
-            label="Fraud only (ground truth)"
-          />
+          {hasLabels && (
+            <FormControlLabel
+              control={<Switch checked={fraudOnlySwitch} onChange={(e) => { setPage(0); setFraudOnly(e.target.checked) }} />}
+              label="Fraud only (ground truth)"
+            />
+          )}
         </Stack>
         <Box sx={{ overflowX: 'auto', position: 'relative' }}>
           {loading && (
@@ -148,7 +153,7 @@ export default function Transactions() {
                 <TableCell>Time</TableCell>
                 <TableCell>Type</TableCell>
                 <TableCell>Status</TableCell>
-                <TableCell>Label</TableCell>
+                {hasLabels && <TableCell>Label</TableCell>}
                 <TableCell align="right">Actions</TableCell>
               </TableRow>
             </TableHead>
@@ -165,11 +170,13 @@ export default function Transactions() {
                     <Chip size="small" label={r.status}
                       color={r.status === 'suspicious' ? 'warning' : 'default'} variant="outlined" />
                   </TableCell>
-                  <TableCell>
-                    {r.is_fraud
-                      ? <Chip size="small" label="Fraud" color="error" />
-                      : <Chip size="small" label="Legit" variant="outlined" />}
-                  </TableCell>
+                  {hasLabels && (
+                    <TableCell>
+                      {r.is_fraud
+                        ? <Chip size="small" label="Fraud" color="error" />
+                        : <Chip size="small" label="Legit" variant="outlined" />}
+                    </TableCell>
+                  )}
                   <TableCell align="right">
                     <Tooltip title="Delete">
                       <IconButton size="small" onClick={() => setConfirm({ open: true, uid: r.txn_uid })}>
@@ -180,7 +187,7 @@ export default function Transactions() {
                 </TableRow>
               ))}
               {!loading && rows.length === 0 && (
-                <TableRow><TableCell colSpan={9} align="center" sx={{ py: 4, color: 'text.secondary' }}>No transactions found</TableCell></TableRow>
+                <TableRow><TableCell colSpan={hasLabels ? 9 : 8} align="center" sx={{ py: 4, color: 'text.secondary' }}>No transactions found</TableCell></TableRow>
               )}
             </TableBody>
           </Table>

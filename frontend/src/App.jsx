@@ -18,6 +18,8 @@ import Reports from './pages/Reports'
 import AccountDetail from './pages/AccountDetail'
 import ModelAnalytics from './pages/ModelAnalytics'
 import Notifications from './pages/Notifications'
+import DemoScenario from './pages/DemoScenario'
+import RequiresMainDataset from './components/RequiresMainDataset'
 import { NotificationsProvider } from './context/NotificationsContext'
 
 export default function App() {
@@ -41,9 +43,10 @@ export default function App() {
         <Route path="/rules" element={<RuleDetection />} />
         <Route path="/graph" element={<GraphAnalysis />} />
         <Route path="/features" element={<Features />} />
-        <Route path="/ml" element={<MLScoring />} />
-        <Route path="/gnn" element={<GNN />} />
-        <Route path="/analytics" element={<ModelAnalytics />} />
+        <Route path="/ml" element={<RequiresMainDataset title="ML Scoring"><MLScoring /></RequiresMainDataset>} />
+        <Route path="/gnn" element={<RequiresMainDataset title="Graph Neural Network"><GNN /></RequiresMainDataset>} />
+        <Route path="/analytics" element={<RequiresMainDataset title="Model Analytics"><ModelAnalytics /></RequiresMainDataset>} />
+        <Route path="/demo" element={<DemoScenario />} />
         <Route path="/notifications" element={<Notifications />} />
         <Route path="/rings" element={<FraudRings />} />
         <Route path="/alerts" element={<Alerts />} />

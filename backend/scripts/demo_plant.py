@@ -1,113 +1,37 @@
-"""Plant the demo scenario into a copy and run the detection pipeline on it.
+"""Plant the demo scenario and run the detection pipeline on it - into a copy of
+the real data (with ordinary background activity), or into the standalone demo
+database (the 22 scripted accounts and transactions, nothing else).
 
-The heavy half of scripts/demo_scenario.py, which describes the scenario and
-is what you run. Import it only after scripts.demo_common.point_app_at(DEMO_DIR):
-it uses the app's database engine, which must already point at the copy.
+The heavy half of scripts/demo_scenario.py, which is what you run. Import it
+only after scripts.demo_common.point_app_at(): it uses the app's database
+engine, which must already point at the demo database. The scenario itself
+is defined in app/demo/scenario.py.
 """
 import random
 import time
-from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 
-from sqlalchemy import and_
 
 from app.database import SessionLocal, engine
+from app.demo import coverage
+from app.demo.scenario import (  # noqa: F401  (the scenario data, shared with the app)
+    BACKGROUND_PREFIX, BASE, CASHOUTS, COLLECTOR, FEEDERS, MULE, NAMES, ROLES, SHELLS, STAGES,
+    scenario_accounts as _accounts, scenario_transactions as _transactions,
+)
 from app.migrations import run_migrations
 from app import models  # noqa: F401  (registers tables)
 from app.ml import alerts as alert_engine
 from app.ml import baseline, features, fraud_ring, graph_analysis
 from app.ml import rules as rules_engine
 from app.models.account import Account
-from app.models.alert import Alert
-from app.models.rule_hit import RuleHit
 from app.models.transaction import Transaction
-from scripts.demo_common import DEMO_DIR, PREFIX, PREFIX_END, check_pointed_at
+from scripts.demo_common import DEMO_DIR, PREFIX, STANDALONE_DIR, check_pointed_at
 
-BASE = datetime(2024, 11, 14, 1, 30)   # a night inside the synthetic data's 2024 range
 ML_ALERT_THRESHOLD = 0.8               # same default as the Fraud Alerts page
 YEAR_START, YEAR_END = datetime(2024, 1, 1), datetime(2024, 12, 31, 23, 59)
 QUIET_BEFORE, QUIET_AFTER = timedelta(days=1), timedelta(days=2)  # no background txns near the scenario
 
-FEEDERS = [f"{PREFIX}FEED{i:02d}" for i in range(1, 10)]
-MULE = f"{PREFIX}MULE"
-COLLECTOR = f"{PREFIX}COLLECTOR"
-SHELLS = [f"{PREFIX}SHELL1", f"{PREFIX}SHELL2"]
-CASHOUTS = [f"{PREFIX}CASH{i:02d}" for i in range(1, 10)]
-
-ROLES = {
-    **{u: "feeder" for u in FEEDERS},
-    MULE: "mule",
-    COLLECTOR: "collector",
-    **{u: "shell" for u in SHELLS},
-    **{u: "cash-out" for u in CASHOUTS},
-}
-NAMES = [
-    "Ritika Bansal", "Harish Kulkarni", "Meera Pillai", "Sanjay Rawat", "Ayesha Khan",
-    "Gopal Iyer", "Nandini Rao", "Vikram Sethi", "Pooja Chawla",          # feeders
-    "Kabir Malhotra",                                                      # mule
-    "Raghav Oberoi",                                                       # collector
-    "Sterling Traders", "Lotus Exim Services",                             # shells
-    "Imran Shaikh", "Deepa Menon", "Tarun Gill", "Lakshmi Reddy", "Aman Bedi",
-    "Sunita Joshi", "Farhan Qureshi", "Kavya Nair", "Rohit Dhawan",        # cash-outs
-]
-STAGES = ["1 Collection", "2 Consolidation", "3 Layering", "4 Cash-out"]
-RULE_LABEL = {rules_engine.RULE_CODES[name]: label                   # "R4" -> "R4 · Many senders → one account"
-              for name, label in rules_engine.RULE_LABELS.items()}
-
-
-def _is_demo(column):
-    return and_(column >= PREFIX, column < PREFIX_END)   # see PREFIX_END
-
-
-# --------------------------------------------------------------- scenario data
-
-def _accounts() -> list[dict]:
-    created = {u: BASE - timedelta(days=300 + 37 * i) for i, u in enumerate(FEEDERS)}
-    created[MULE] = BASE - timedelta(days=6)            # brand-new account -> R3
-    created[COLLECTOR] = BASE - timedelta(days=500)
-    created.update({SHELLS[0]: BASE - timedelta(days=200), SHELLS[1]: BASE - timedelta(days=180)})
-    created.update({u: BASE - timedelta(days=250 + 23 * i) for i, u in enumerate(CASHOUTS)})
-    types = {"feeder": "Savings", "mule": "Wallet", "collector": "Current",
-             "shell": "Business", "cash-out": "Savings"}
-    return [
-        dict(account_uid=uid, customer_name=name, email=f"{uid.lower()}@demo.example",
-             phone=f"90000{i:05d}", account_type=types[ROLES[uid]], created_at=created[uid],
-             risk_level="Low", fraud_score=0.0, is_fraud=0, is_active=1)
-        for i, (uid, name) in enumerate(zip(ROLES, NAMES))
-    ]
-
-
-def _transactions() -> list[tuple[str, dict]]:
-    """Return (stage, transaction row) pairs in time order."""
-    rows = []
-
-    def add(stage, sender, receiver, amount, ts):
-        rows.append((stage, dict(
-            txn_uid=f"{PREFIX}TXN{len(rows) + 1:03d}", sender_uid=sender, receiver_uid=receiver,
-            amount=float(amount), timestamp=ts, txn_type="transfer", status="normal",
-            is_fraud=0, fraud_score=0.0,
-        )))
-
-    # 1) feeders -> mule within 25 minutes (one under Rs 50,000, so R3 skips it)
-    feed_amounts = [52000, 61500, 48000, 75000, 83000, 57500, 66000, 90000, 71000]
-    feed_minutes = [0, 3, 5, 8, 11, 14, 17, 21, 25]
-    for uid, amt, m in zip(FEEDERS, feed_amounts, feed_minutes):
-        add(STAGES[0], uid, MULE, amt, BASE + timedelta(minutes=m))
-
-    # 2) mule forwards ~97% to the collector in one go
-    add(STAGES[1], MULE, COLLECTOR, round(sum(feed_amounts) * 0.97, 2), BASE + timedelta(minutes=50))
-
-    # 3) layering loop through two shell companies within 8 hours, under the R1 threshold
-    add(STAGES[2], COLLECTOR, SHELLS[0], 92000, BASE + timedelta(hours=3))
-    add(STAGES[2], SHELLS[0], SHELLS[1], 90500, BASE + timedelta(hours=5))
-    add(STAGES[2], SHELLS[1], COLLECTOR, 89000, BASE + timedelta(hours=8))
-
-    # 4) structured cash-out: 9 transfers just under the Rs 1,00,000 threshold in 8 minutes
-    cash_amounts = [99500, 98200, 97800, 99000, 96500, 98900, 97200, 99300, 96800]
-    for i, (uid, amt) in enumerate(zip(CASHOUTS, cash_amounts)):
-        add(STAGES[3], COLLECTOR, uid, amt, BASE + timedelta(hours=26, minutes=i))
-    return rows
-
+# --------------------------------------------------------- background activity
 
 def _random_time(rng: random.Random, start: datetime) -> datetime | None:
     """A random time between start and the end of 2024, away from the scenario."""
@@ -137,7 +61,7 @@ def _background(accounts: list[dict], real_created: dict[str, datetime]) -> list
             sender, receiver = ((acc["account_uid"], other) if rng.random() < 0.5
                                 else (other, acc["account_uid"]))
             rows.append(dict(
-                txn_uid=f"{PREFIX}BG{len(rows) + 1:04d}", sender_uid=sender, receiver_uid=receiver,
+                txn_uid=f"{BACKGROUND_PREFIX}{len(rows) + 1:04d}", sender_uid=sender, receiver_uid=receiver,
                 amount=min(round(rng.lognormvariate(8.0, 1.0), 2), 95000.0), timestamp=ts,
                 txn_type=rng.choice(["transfer", "payment", "withdrawal"]), status="normal",
                 is_fraud=0, fraud_score=0.0,
@@ -160,14 +84,19 @@ def plant(db) -> None:
     print(f"Planted {len(accounts)} accounts, {len(txns)} scenario transactions and "
           f"{len(background)} ordinary background transactions into the copy "
           f"(ids start with {PREFIX}).")
+    _print_stages(txns)
+
+
+def _print_stages(txns) -> None:
     for stage in STAGES:
         stage_rows = [row for s, row in txns if s == stage]
         total = sum(r["amount"] for r in stage_rows)
         print(f"  {stage:16s} {len(stage_rows):2d} txns  Rs {total:>12,.0f}")
 
 
-def run_pipeline(db) -> dict:
-    """Run the same steps as the UI, in the sidebar's order (GNN skipped)."""
+def run_pipeline(db, with_ml: bool = True) -> dict:
+    """Run the same steps as the UI, in the sidebar's order (GNN skipped; ML
+    skipped too without with_ml)."""
     steps = [
         ("Rule Detection", rules_engine.apply_rules,
          lambda r: f"{r['total_suspicious']} suspicious transactions"),
@@ -182,6 +111,8 @@ def run_pipeline(db) -> dict:
         ("Fraud Rings", fraud_ring.detect,
          lambda r: f"{r['rings_found']} rings, {r['accounts_involved']} accounts"),
     ]
+    if not with_ml:
+        steps = [step for step in steps if step[0] != "ML Scoring"]
     results = {}
     for name, fn, describe in steps:
         start = time.perf_counter()
@@ -190,59 +121,94 @@ def run_pipeline(db) -> dict:
     return results
 
 
-def report(db, rings: dict) -> None:
-    status = dict(db.query(Transaction.txn_uid, Transaction.status)
-                    .filter(_is_demo(Transaction.txn_uid)))
-    rule_hits = defaultdict(set)
-    for txn_uid, rule in db.query(RuleHit.txn_uid, RuleHit.rule).filter(_is_demo(RuleHit.txn_uid)):
-        rule_hits[txn_uid].add(rules_engine.RULE_CODES[rule])
-    stage_of = {row["txn_uid"]: stage for stage, row in _transactions()}
-
+def report(db, ml: bool = True) -> None:
+    """Print what caught each stage, each account and the rings holding the
+    scenario - from the same coverage report the Demo Scenario page shows.
+    ml: whether ML scoring ran, so there are model scores to show."""
+    data = coverage.report(db)
+    labels = data["rule_labels"]
     print("\nRule engine - did each stage get caught?")
-    for stage in STAGES:
-        uids = [u for u, s in stage_of.items() if s == stage]
-        flagged = sum(status.get(u) == "suspicious" for u in uids)
-        fired = Counter(code for u in uids for code in rule_hits[u])
-        rules_text = ", ".join(f"{RULE_LABEL[c]} x{n}" for c, n in sorted(fired.items())) or "none"
-        print(f"  {stage:16s} flagged {flagged}/{len(uids)}   {rules_text}")
+    for stage in data["stages"]:
+        fired = ", ".join(f"{labels[code]} x{n}" for code, n in stage["rules_fired"].items()) or "none"
+        missing = [code for code in stage["expected_rules"] if code not in stage["rules_fired"]]
+        print(f"  {stage['stage']:16s} flagged {stage['flagged']}/{stage['total']}   {fired}"
+              + (f"   (designed to trigger {', '.join(missing)}: did not fire)" if missing else ""))
 
-    accounts = (db.query(Account.account_uid, Account.risk_level, Account.fraud_score)
-                  .filter(_is_demo(Account.account_uid)).all())
-    alert_counts = defaultdict(int)
-    for (uid,) in db.query(Alert.account_uid).filter(_is_demo(Alert.account_uid)):
-        alert_counts[uid] += 1
-    # member_ids is the full membership; ring["nodes"] is capped at 40 for display
-    ring_of = {uid: ring for ring in rings.get("rings", []) for uid in ring.get("member_ids", [])}
+    if ml:
+        print("\nAccounts - rules risk level, ML score (model was told they are legit), alerts, ring")
+        print(f"  {'account':16s} {'role':10s} {'risk':7s} {'ML score':>8s} {'alerts':>6s}  ring")
+    else:
+        print("\nAccounts - role, risk level the rules raised, alerts, ring")
+        print(f"  {'account':16s} {'role':10s} {'risk':7s} {'alerts':>6s}  ring")
+    for acc in data["accounts"]:
+        score = f" {acc['fraud_score'] or 0:8.3f}" if ml else ""
+        print(f"  {acc['account_uid']:16s} {acc['role']:10s} {acc['risk_level'] or '-':7s}{score} "
+              f"{acc['alerts']:6d}  {acc['ring_id'] or '-'}")
 
-    print("\nAccounts - rules risk level, ML score (model was told they are legit), alerts, ring")
-    print(f"  {'account':16s} {'role':10s} {'risk':7s} {'ML score':>8s} {'alerts':>6s}  ring")
-    for uid, risk, score in sorted(accounts, key=lambda a: list(ROLES).index(a.account_uid)):
-        ring = ring_of.get(uid)
-        print(f"  {uid:16s} {ROLES[uid]:10s} {risk:7s} {score or 0:8.3f} {alert_counts[uid]:6d}  "
-              f"{ring['ring_id'] if ring else '-'}")
-
-    demo_rings = {ring["ring_id"]: ring for uid, ring in ring_of.items() if uid.startswith(PREFIX)}
     print("\nFraud rings containing demo accounts:")
-    if not demo_rings:
+    if not data["rings"]:
         print("  none")
-    for ring in demo_rings.values():
+    for ring in data["rings"]:
+        score = f" (ML score {ring['avg_fraud_score']:.2f})" if ml and ring["avg_fraud_score"] is not None else ""
         print(f"  {ring['ring_id']}: {ring['size']} accounts, main {ring['main_account']}, "
               f"withdrawal {ring['withdrawal_account'] or '-'}, Rs {ring['total_flow']:,.0f} moved, "
-              f"risk {ring['risk']} (ML score {ring['avg_fraud_score']:.2f})")
-        print(f"    rules fired on its transactions: "
-              f"{', '.join(RULE_LABEL[c] for c in ring['rules']) or 'none'}")
+              f"risk {ring['risk']}{score}")
+        print(f"    rules fired on its transactions: {', '.join(labels[c] for c in ring['rules']) or 'none'}")
+
+    cov = data["coverage"]
+    print(f"\nCoverage: {cov['transactions_flagged']}/{cov['transactions_total']} transactions flagged, "
+          f"{cov['stages_detected']}/{cov['stages_total']} stages detected, rules fired: "
+          f"{' '.join(cov['rules_fired']) or 'none'}, {cov['accounts_in_rings']}/{cov['accounts_total']} "
+          "accounts in a fraud ring.")
 
 
-def run(plant_only: bool) -> None:
-    """Plant into the demo copy and, unless plant_only, run the pipeline and report."""
-    check_pointed_at(DEMO_DIR, engine)   # never the real database or pipeline outputs
+def run(plant_only: bool, folder: str = DEMO_DIR) -> None:
+    """Plant into the demo copy in folder and, unless plant_only, run the pipeline and report."""
+    check_pointed_at(folder, engine)   # never the real database or pipeline outputs
     run_migrations(engine)   # the copy may predate newer tables and columns
     db = SessionLocal()
     try:
         plant(db)
         if not plant_only:
             print("\nRunning the detection pipeline on the copy:")
-            results = run_pipeline(db)
-            report(db, results["Fraud Rings"])
+            run_pipeline(db)
+            report(db)
+    finally:
+        db.close()
+
+
+# ------------------------------------------------------------- standalone demo
+
+def plant_standalone(db) -> None:
+    """Only the scripted scenario: its 22 accounts and 22 transactions, into an
+    empty database - no copied data and no background activity."""
+    if db.query(Account.id).first() is not None or db.query(Transaction.id).first() is not None:
+        raise SystemExit("The standalone demo database isn't empty; it should have just been created. "
+                         "Delete it with --cleanup --standalone and build it again.")
+    accounts, txns = _accounts(), _transactions()
+    db.bulk_insert_mappings(Account, accounts)
+    db.bulk_insert_mappings(Transaction, [row for _, row in txns])
+    db.commit()
+    print(f"Planted the scenario alone: {len(accounts)} accounts and {len(txns)} transactions "
+          f"(ids start with {PREFIX}), nothing else.")
+    _print_stages(txns)
+
+
+def run_standalone(plant_only: bool, folder: str = STANDALONE_DIR) -> None:
+    """Build the standalone demo database in folder: every table, the admin user,
+    the scenario and, unless plant_only, the detection steps that make sense on
+    22 scripted accounts (no ML or GNN training: that needs the main labelled dataset)."""
+    check_pointed_at(folder, engine)   # never the real database or pipeline outputs
+    from scripts.init_db import init   # uses the app's engine: imported only now that it points here
+
+    init()   # tables, and the admin user from ADMIN_USERNAME / ADMIN_PASSWORD
+    db = SessionLocal()
+    try:
+        plant_standalone(db)
+        if not plant_only:
+            print("\nRunning detection on the standalone demo (ML/GNN training skipped: "
+                  "it needs the main labelled dataset):")
+            run_pipeline(db, with_ml=False)
+            report(db, ml=False)
     finally:
         db.close()

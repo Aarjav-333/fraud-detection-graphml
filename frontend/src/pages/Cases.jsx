@@ -13,6 +13,7 @@ import VisibilityIcon from '@mui/icons-material/Visibility'
 import RiskChip from '../components/RiskChip'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { getCasesSummary, listCases, getCase, createCase, updateCase, deleteCase } from '../api/cases'
+import { useSystem } from '../context/SystemContext'
 
 const STATUSES = ['Open', 'Under Investigation', 'Confirmed Fraud', 'False Positive', 'Closed']
 const STATUS_COLOR = {
@@ -22,6 +23,7 @@ const STATUS_COLOR = {
 const EMPTY = { account_uid: '', alert_uid: '', assigned_to: '', notes: '' }
 
 export default function Cases() {
+  const { hasModelScores, modelScore } = useSystem()
   const [summary, setSummary] = useState(null)
   const [rows, setRows] = useState([])
   const [total, setTotal] = useState(0)
@@ -219,7 +221,7 @@ export default function Cases() {
               {detail.case_uid}
               <Typography variant="body2" color="text.secondary">
                 Account {detail.account_uid}{detail.account ? ` — ${detail.account.customer_name}` : ''}
-                {detail.account && <> · <RiskChip level={detail.account.risk_level} /> · score {(detail.account.fraud_score * 100).toFixed(0)}%</>}
+                {detail.account && <> · <RiskChip level={detail.account.risk_level} />{hasModelScores && <> · score {modelScore(detail.account.fraud_score, 0)}</>}</>}
               </Typography>
             </DialogTitle>
             <DialogContent dividers>

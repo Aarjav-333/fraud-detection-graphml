@@ -11,6 +11,7 @@ import SearchIcon from '@mui/icons-material/Search'
 import RiskChip from '../components/RiskChip'
 import { generateAlerts, getAlertsSummary, listAlerts, updateAlertStatus } from '../api/alerts'
 import { createCase } from '../api/cases'
+import { useSystem } from '../context/SystemContext'
 
 const STATUSES = ['Pending', 'Under Review', 'Confirmed Fraud', 'False Positive', 'Resolved']
 const STATUS_COLOR = {
@@ -31,6 +32,7 @@ export default function Alerts() {
   const [loading, setLoading] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [threshold, setThreshold] = useState(0.8)
+  const { modelScore } = useSystem()
   const [toast, setToast] = useState('')
   const [error, setError] = useState('')
 
@@ -181,7 +183,7 @@ export default function Alerts() {
                   <TableCell sx={{ maxWidth: 320 }}>
                     <Typography variant="body2" noWrap title={r.reason}>{r.reason}</Typography>
                   </TableCell>
-                  <TableCell align="right">{(r.fraud_score * 100).toFixed(1)}%</TableCell>
+                  <TableCell align="right">{modelScore(r.fraud_score)}</TableCell>
                   <TableCell><RiskChip level={r.risk_level} /></TableCell>
                   <TableCell>
                     <Select size="small" value={r.status} sx={{ minWidth: 150, fontSize: 13 }}

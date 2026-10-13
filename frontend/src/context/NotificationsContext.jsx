@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { useNavigate } from 'react-router-dom'
 import { Alert, Button, Snackbar } from '@mui/material'
 import { useAuth } from './AuthContext'
+import { useSystem } from './SystemContext'
 import {
   listNotifications, markAllNotificationsRead, markNotificationRead, markNotificationUnread,
   NOTIFICATIONS_WS_URL,
@@ -20,6 +21,7 @@ export const notificationLink = (n) =>
 // and catches up on whatever it missed. The list itself is stored server-side.
 export function NotificationsProvider({ children }) {
   const { user } = useAuth()
+  const { refresh: refreshSystem } = useSystem()
   const navigate = useNavigate()
   const enabled = isFraudAnalyst(user)
   const [recent, setRecent] = useState([])
@@ -56,6 +58,7 @@ export function NotificationsProvider({ children }) {
       ws.onmessage = (event) => {
         const msg = JSON.parse(event.data)
         if (msg.type === 'ready') {
+          if (attempt > 0) refreshSystem()   // reconnected: the backend may have been swapped
           attempt = 0
           setConnection('live')
           setUnread(msg.unread)
@@ -86,7 +89,7 @@ export function NotificationsProvider({ children }) {
       clearTimeout(timer)
       if (ws) ws.close()
     }
-  }, [enabled, refresh])
+  }, [enabled, refresh, refreshSystem])
 
   const applyRead = useCallback((id, read, count) => {
     setRecent((prev) => prev.map((n) => (n.id === id ? { ...n, read } : n)))

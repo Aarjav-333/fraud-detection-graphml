@@ -8,7 +8,10 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.api.system import ML_NEEDS_MAIN_DATASET
+from app.config import settings
 from app.database import get_db
+from app.demo import coverage
 from app.deps import get_current_user
 from app.models.account import Account
 from app.models.transaction import Transaction
@@ -28,6 +31,7 @@ EXPORTS = {
     "alerts": "All fraud alerts with status",
     "cases": "All investigation cases",
 }
+SCENARIO_EXPORT = ("demo_scenario", "The demo scenario's scripted transactions: stage, rules fired, flagged")
 
 
 def _csv_response(header: list, rows: list, filename: str) -> StreamingResponse:
@@ -45,7 +49,10 @@ def _csv_response(header: list, rows: list, filename: str) -> StreamingResponse:
 
 @router.get("/exports")
 def list_exports():
-    return [{"name": k, "description": v} for k, v in EXPORTS.items()]
+    exports = [{"name": k, "description": v} for k, v in EXPORTS.items()]
+    if settings.is_standalone_demo:
+        exports.insert(0, {"name": SCENARIO_EXPORT[0], "description": SCENARIO_EXPORT[1]})
+    return exports
 
 
 @router.get("/export/{name}")
@@ -84,6 +91,18 @@ def export_csv(name: str, db: Session = Depends(get_db)):
               c.final_decision or "", (c.notes or "").replace("\n", " "),
               c.created_at.isoformat() if c.created_at else ""] for c in rows],
             "cases.csv",
+        )
+    if name == SCENARIO_EXPORT[0]:
+        data = coverage.report(db)
+        if data is None:
+            raise HTTPException(status_code=404, detail="The demo scenario isn't in this database.")
+        return _csv_response(
+            ["stage", "txn_uid", "sender_uid", "sender_role", "receiver_uid", "receiver_role", "amount",
+             "timestamp", "status", "rules_fired", "intended_rules", "alerts"],
+            [[s["stage"], t["txn_uid"], t["sender_uid"], t["sender_role"], t["receiver_uid"], t["receiver_role"],
+              t["amount"], t["timestamp"] or "", t["status"], " ".join(t["rules"]), " ".join(s["expected_rules"]),
+              t["alerts"]] for s in data["stages"] for t in s["transactions"]],
+            "demo_scenario.csv",
         )
     raise HTTPException(status_code=404, detail=f"Unknown export '{name}'")
 
@@ -131,6 +150,9 @@ def summary_pdf(db: Session = Depends(get_db)):
     gnn = load_gnn_results() or {}
     rings = load_rings()
 
+    standalone = settings.is_standalone_demo
+    scenario = coverage.report(db) if standalone else None
+
     # ---- build document ----
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=1.6 * cm, bottomMargin=1.6 * cm)
@@ -144,7 +166,7 @@ def summary_pdf(db: Session = Depends(get_db)):
         stat_table([
             ["Metric", "Value"],
             ["Total accounts", f"{total_accounts:,}"],
-            ["Ground-truth fraud accounts", f"{fraud_accounts:,}"],
+            ["Ground-truth fraud accounts", "not labelled (standalone demo)" if standalone else f"{fraud_accounts:,}"],
             ["High-risk accounts (after detection)", f"{high_risk:,}"],
             ["Total transactions", f"{total_txns:,}"],
             ["Suspicious transactions (rule engine)", f"{sus_txns:,}"],
@@ -152,8 +174,26 @@ def summary_pdf(db: Session = Depends(get_db)):
         ], [9 * cm, 6 * cm]),
     ]
 
-    story.append(Paragraph("2. Machine Learning Performance", h2))
-    if ml:
+    if standalone:
+        story.append(Paragraph("2. Demo Scenario Detection Coverage", h2))
+        if scenario:
+            cov = scenario["coverage"]
+            story.append(Paragraph(
+                f"Standalone demo: only the scripted scenario is in this database. "
+                f"{cov['transactions_flagged']} of {cov['transactions_total']} scripted transactions flagged; "
+                f"{cov['stages_detected']} of {cov['stages_total']} stages detected; rules fired: "
+                f"{', '.join(cov['rules_fired']) or 'none yet'}.", body))
+            rows = [["Stage", "Flagged", "Intended rules", "Rules fired", "Detected"]]
+            for s in scenario["stages"]:
+                rows.append([s["stage"], f"{s['flagged']}/{s['total']}", " ".join(s["expected_rules"]),
+                             " ".join(f"{code} x{n}" for code, n in s["rules_fired"].items()) or "none",
+                             "yes" if s["detected"] else "no"])
+            story.append(stat_table(rows))
+        story.append(Spacer(1, 6))
+        story.append(Paragraph("Machine learning: not applicable. " + ML_NEEDS_MAIN_DATASET, body))
+        gnn = {}   # no model results in the standalone demo
+    elif ml:
+        story.append(Paragraph("2. Machine Learning Performance", h2))
         rows = [["Model", "Accuracy", "Precision", "Recall", "F1", "ROC-AUC"]]
         for name, m in ml["results"].items():
             rows.append([name.replace("_", " ").title(),
@@ -164,6 +204,7 @@ def summary_pdf(db: Session = Depends(get_db)):
             f"Best baseline model: <b>{ml['best_model'].replace('_', ' ').title()}</b>. "
             f"Top features included: {', '.join(f['feature'] for f in ml['top_features'][:5])}.", body))
     else:
+        story.append(Paragraph("2. Machine Learning Performance", h2))
         story.append(Paragraph("Baseline models not trained yet.", body))
 
     if gnn:
@@ -188,6 +229,8 @@ def summary_pdf(db: Session = Depends(get_db)):
             rules_fired = " ".join(r["rules"]) if "rules" in r else "-"  # rings.json from before rule tracking
             rows.append([r["ring_id"], str(r["size"]), r["main_account"],
                          f"Rs {r['total_flow']:,.0f}", f"{r['avg_fraud_score']:.2f}", rules_fired or "none", r["risk"]])
+        if standalone:   # no ML scores in the standalone demo: drop that column
+            rows = [row[:4] + row[5:] for row in rows]
         story.append(stat_table(rows))
     else:
         story.append(Paragraph("Ring detection not run yet.", body))

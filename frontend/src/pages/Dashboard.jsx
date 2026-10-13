@@ -16,6 +16,7 @@ import {
 } from 'recharts'
 import RiskChip from '../components/RiskChip'
 import { getDashboardStats } from '../api/dashboard'
+import { useSystem } from '../context/SystemContext'
 
 const money = (n) => '₹' + Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })
 const RISK_COLORS = { High: '#dc2626', Medium: '#d97706', Low: '#16a34a' }
@@ -43,6 +44,7 @@ export default function Dashboard() {
   const [stats, setStats] = useState(null)
   const [error, setError] = useState('')
   const navigate = useNavigate()
+  const { hasModelScores, modelScore } = useSystem()
 
   useEffect(() => {
     getDashboardStats().then(setStats)
@@ -98,8 +100,9 @@ export default function Dashboard() {
         </Grid>
         <Grid item xs={6} md={2}>
           <StatCard icon={<ModelTrainingIcon />} label="Best model"
-            value={stats.ml.trained ? `F1 ${(stats.ml.best_f1 * 100).toFixed(0)}%` : '—'}
-            sub={stats.ml.best_model || 'not trained yet'} onClick={() => navigate('/ml')} />
+            value={hasModelScores && stats.ml.trained ? `F1 ${(stats.ml.best_f1 * 100).toFixed(0)}%` : '—'}
+            sub={hasModelScores ? stats.ml.best_model || 'not trained yet' : 'off in the standalone demo'}
+            onClick={() => navigate('/ml')} />
         </Grid>
       </Grid>
 
@@ -186,7 +189,7 @@ export default function Dashboard() {
                     <TableCell sx={{ fontFamily: 'monospace' }}>{a.account_uid}</TableCell>
                     <TableCell>{a.customer_name}</TableCell>
                     <TableCell align="right">
-                      <Chip size="small" color="error" label={`${(a.fraud_score * 100).toFixed(0)}%`} />
+                      {hasModelScores ? <Chip size="small" color="error" label={modelScore(a.fraud_score, 0)} /> : '—'}
                     </TableCell>
                     <TableCell><RiskChip level={a.risk_level} /></TableCell>
                   </TableRow>

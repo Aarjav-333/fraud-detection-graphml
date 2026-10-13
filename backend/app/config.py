@@ -12,6 +12,8 @@ _MIN_SECRET_KEY_LENGTH = 32
 _MIN_SECRET_KEY_DISTINCT_CHARS = 10  # rejects "aaaa...", still allows hex keys
 _MIN_ADMIN_PASSWORD_LENGTH = 12
 SMTP_SECURITY_MODES = ("starttls", "ssl", "none")
+DEMO_MODES = ("", "standalone")
+STANDALONE_DEMO = "standalone"
 
 BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -51,6 +53,12 @@ class Settings(BaseSettings):
     EMAIL_FROM_NAME: str = "Fraud Monitoring Team"
     EMAIL_SUPPORT_CONTACT: str = ""     # how holders reach support, e.g. a URL or phone number
 
+    # Set by `python -m scripts.demo_scenario --serve --standalone` for the standalone
+    # demo database (only the 22 scripted accounts and transactions): the app then
+    # shows a demo indicator and refuses ML/GNN training, which needs the main
+    # labelled dataset. Empty for the normal app.
+    DEMO_MODE: str = ""
+
     # hide_input_in_errors keeps secret values out of validation errors/logs.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
 
@@ -62,6 +70,18 @@ class Settings(BaseSettings):
         if value not in SMTP_SECURITY_MODES:
             raise ValueError(f"must be one of: {', '.join(SMTP_SECURITY_MODES)}")
         return value
+
+    @field_validator("DEMO_MODE")
+    @classmethod
+    def _known_demo_mode(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value not in DEMO_MODES:
+            raise ValueError("must be empty or 'standalone'")
+        return value
+
+    @property
+    def is_standalone_demo(self) -> bool:
+        return self.DEMO_MODE == STANDALONE_DEMO
 
     @property
     def is_development(self) -> bool:
