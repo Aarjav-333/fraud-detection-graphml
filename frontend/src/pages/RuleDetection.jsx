@@ -8,6 +8,9 @@ import GavelIcon from '@mui/icons-material/Gavel'
 import { useNavigate } from 'react-router-dom'
 import { getRulesStatus, runRules } from '../api/rules'
 
+// Direction notation appended to the fan-in / fan-out rule labels in "Hits per rule".
+const RULE_NOTATION = { fan_in: ' (M → 1)', fan_out: ' (1 → M)' }
+
 export default function RuleDetection() {
   const navigate = useNavigate()
   const [status, setStatus] = useState(null)
@@ -93,7 +96,7 @@ export default function RuleDetection() {
               <TableBody>
                 {result.rules.map((r) => (
                   <TableRow key={r.rule} hover>
-                    <TableCell>{r.label}</TableCell>
+                    <TableCell>{r.label}{RULE_NOTATION[r.rule] ?? ''}</TableCell>
                     <TableCell align="right">
                       <Chip size="small" label={r.count}
                         color={r.count > 0 ? 'warning' : 'default'}
