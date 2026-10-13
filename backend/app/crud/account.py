@@ -1,8 +1,10 @@
 import re
 from typing import Optional
-from sqlalchemy import or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
-from app.models.account import Account
+from app.models.account import (
+    Account, REVIEW_STATUSES, STATUS_NORMAL, STATUS_SUSPICIOUS, SUSPICIOUS_RISK_LEVELS, SUSPICIOUS_SCORE,
+)
 from app.schemas.account import AccountCreate, AccountUpdate
 
 
@@ -16,11 +18,29 @@ def _next_account_uid(db: Session) -> str:
     return f"ACC{max_num + 1:05d}"
 
 
+def _fraud_status_filter(status: str):
+    """SQL for Account.fraud_status == status (that property, written as a query)."""
+    if status in REVIEW_STATUSES:
+        return Account.review_status == status
+    # coalesce: a missing score or risk level counts as not flagged, as in the property
+    flagged = or_(func.coalesce(Account.fraud_score, 0) >= SUSPICIOUS_SCORE,
+                  func.coalesce(Account.risk_level, "").in_(SUSPICIOUS_RISK_LEVELS))
+    not_reviewed = func.coalesce(Account.review_status, "").notin_(REVIEW_STATUSES)
+    if status == STATUS_SUSPICIOUS:
+        return and_(not_reviewed, flagged)
+    if status == STATUS_NORMAL:
+        return and_(not_reviewed, ~flagged)
+    raise ValueError(f"Unknown fraud status {status!r}")
+
+
 def list_accounts(db: Session, skip: int = 0, limit: int = 25,
-                  q: Optional[str] = None, active_only: bool = False):
+                  q: Optional[str] = None, active_only: bool = False,
+                  fraud_status: Optional[str] = None):
     query = db.query(Account)
     if active_only:
         query = query.filter(Account.is_active == 1)
+    if fraud_status:
+        query = query.filter(_fraud_status_filter(fraud_status))
     if q:
         like = f"%{q}%"
         query = query.filter(or_(

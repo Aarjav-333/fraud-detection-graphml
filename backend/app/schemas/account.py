@@ -30,6 +30,12 @@ class AccountOut(AccountBase):
     fraud_score: float
     is_fraud: int
     is_active: int
+    # Normal / Suspicious / Under Review / Confirmed Fraud (see Account.fraud_status)
+    fraud_status: str
+    review_status: Optional[str] = None
+    review_updated_at: Optional[datetime] = None
+    fraud_confirmed_by: Optional[str] = None
+    fraud_confirmed_at: Optional[datetime] = None
     model_config = {"from_attributes": True}
 
 

@@ -15,9 +15,11 @@ def list_accounts(
     limit: int = Query(25, le=200),
     q: Optional[str] = None,
     active_only: bool = False,
+    fraud_status: Optional[str] = Query(None, pattern="^(Normal|Suspicious|Under Review|Confirmed Fraud)$"),
     db: Session = Depends(get_db),
 ):
-    total, items = crud.list_accounts(db, skip=skip, limit=limit, q=q, active_only=active_only)
+    total, items = crud.list_accounts(db, skip=skip, limit=limit, q=q, active_only=active_only,
+                                      fraud_status=fraud_status)
     return {"total": total, "items": items}
 
 

@@ -29,6 +29,10 @@ export default function Transactions() {
   const [loading, setLoading] = useState(false)
 
   const [addOpen, setAddOpen] = useState(false)
+  // One Idempotency-Key per version of the form: retrying an unchanged submit reuses it (so a
+  // submit that timed out but went through isn't recorded twice); editing a field gets a new one.
+  const [submitKey, setSubmitKey] = useState('')
+  const [saving, setSaving] = useState(false)
   const [form, setForm] = useState(EMPTY)
   const [formError, setFormError] = useState('')
   const [confirm, setConfirm] = useState({ open: false, uid: null })
@@ -53,6 +57,10 @@ export default function Transactions() {
     return () => clearTimeout(t)
   }, [search])
 
+  useEffect(() => {
+    setSubmitKey(globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`)
+  }, [form])
+
   function openAdd() { setForm(EMPTY); setFormError(''); setAddOpen(true) }
 
   async function handleCreate() {
@@ -60,13 +68,16 @@ export default function Transactions() {
     if (!form.sender_uid || !form.receiver_uid || !form.amount) {
       setFormError('Sender, receiver and amount are required'); return
     }
+    setSaving(true)
     try {
-      await createTransaction({ ...form, amount: parseFloat(form.amount) })
+      await createTransaction({ ...form, amount: parseFloat(form.amount) }, submitKey)
       setAddOpen(false)
       setToast('Transaction added')
       fetchData()
     } catch (err) {
       setFormError(err?.response?.data?.detail || 'Could not create transaction')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -201,7 +212,7 @@ export default function Transactions() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setAddOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={handleCreate}>Save</Button>
+          <Button variant="contained" onClick={handleCreate} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
         </DialogActions>
       </Dialog>
 

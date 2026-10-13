@@ -18,10 +18,13 @@ analysts the tools to triage alerts, open cases and export reports.
 ## Contents
 - [Key results](#key-results)
 - [How it works](#how-it-works)
+- [Fraud review, real-time alerts and email](#fraud-review-real-time-alerts-and-email)
+- [Model analytics: GraphSAGE vs GCN](#model-analytics-graphsage-vs-gcn)
 - [Screenshots](#screenshots)
 - [Metrics in detail](#metrics-in-detail)
 - [Getting started](#getting-started)
 - [Running the pipeline](#running-the-pipeline)
+- [Running the tests](#running-the-tests)
 - [Demo scenario](#demo-scenario)
 - [Deployment](#deployment)
 - [API overview](#api-overview)
@@ -38,10 +41,11 @@ running the whole pipeline from the UI on a Windows laptop (CPU only).
 |---|---|
 | Rule engine vs. planted fraud | **99.9% precision, 96.2% recall** (2,562 of 2,663 fraud transactions caught, 3 false alarms) |
 | Best ML model (XGBoost) | **F1 83.1%, ROC-AUC 94.4%** on a held-out test set of 1,250 accounts |
-| GraphSAGE GNN on the account graph | **F1 83.7%, ROC-AUC 95.7%** |
+| GraphSAGE GNN on the account graph | **F1 85.9%, ROC-AUC 96.3%, PR-AUC 93.6%** (GCN: F1 61.0% on the same 1,249 test nodes) |
 | GraphSAGE GNN on Elliptic Bitcoin (203,769 transactions) | **Accuracy 95.7%, ROC-AUC 90.4%, F1 66.1%** |
 | Fraud rings found | **54 rings, 1,699 accounts, 96.8% purity** (members that are real fraud accounts) |
 | Full pipeline (rules → graph → features → ML → alerts → rings) | **≈ 22 seconds** |
+| Analyst alert when a confirmed-fraud account transacts | **pushed over a WebSocket as the transaction is recorded** — no refresh, kept after logins |
 
 ## How it works
 
@@ -60,6 +64,10 @@ flowchart LR
     H --> J["Investigation<br/>cases"]
     I --> J
     J --> K["Reports<br/>PDF · CSV"]
+    H --> R["Analyst review<br/>confirm fraud"]
+    I --> R
+    R --> M["Email to the<br/>account holder"]
+    R --> N["Real-time alerts on its<br/>next transactions"]
 ```
 
 1. **Data quality** — finds missing fields, duplicates, invalid account references,
@@ -97,8 +105,103 @@ flowchart LR
    how many different rules fired on the ring's own transactions.
 9. **Investigations** — cases opened from alerts or accounts, with an assignee,
    notes, a status and a final decision.
-10. **Reports** — a one-page PDF system summary and CSV exports of suspicious
+10. **Fraud review** — an analyst opens a suspicious account, reviews the evidence and
+    confirms it as fraud. That flags the account and emails its holder (see below).
+11. **Real-time alerts** — every later transaction by a confirmed-fraud account alerts
+    the analysts instantly.
+12. **Reports** — a one-page PDF system summary and CSV exports of suspicious
     transactions, high-risk accounts, alerts and cases.
+
+## Fraud review, real-time alerts and email
+
+```
+Transaction recorded → GNN / ML risk score → Suspicious → analyst review → Confirm fraud & flag account
+   → email to the account holder → the account transacts again → real-time alert to every analyst
+```
+
+**Account status** keeps what the models say apart from what an analyst decided. A high
+ML score never counts as a confirmation.
+
+| Status | Set by | Meaning |
+|---|---|---|
+| Normal | — | no rule hit, ML score under 80% |
+| Suspicious | rules or ML | rule-raised risk (Medium/High) or ML score ≥ 80% — waiting for review |
+| Under Review | an analyst | being investigated |
+| Confirmed Fraud | an analyst | flagged; stays flagged across sessions and future transactions until an analyst clears it |
+
+**Investigating an account** (`/accounts/<id>`, linked from Accounts, Fraud Alerts and
+notifications) shows its transactions, alerts, cases and notifications, with three
+actions: *Mark under review*, *Confirm fraud & flag account* (choose the related
+transaction, add the evidence) and *Clear review* (a reason is required). Every change
+records the analyst, the time, the note and the transaction in the account's
+investigation history (`account_status_events`).
+
+**Email to the account holder** is sent by the backend, only after an analyst's
+confirmation is saved — never for an ML prediction. It follows the security-alert
+template: masked account reference (`XXXX2371`), transaction reference, date and amount,
+the flagged status and how to contact support. It includes no full account number and
+no model information.
+- One email per confirmation: repeating it, or two analysts confirming at once, sends nothing more.
+- Every attempt is logged (`email_deliveries`): pending, sent, failed (with the server's
+  reason) or skipped (no usable address, e.g. the dataset's `example.com` addresses).
+- Temporary failures are retried automatically (3 attempts); a failed email has a
+  *Retry* button. A mail problem never undoes the confirmation.
+- SMTP comes from environment variables (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`,
+  `SMTP_PASSWORD`, `SMTP_SECURITY`, `EMAIL_FROM`, `EMAIL_FROM_NAME`, `EMAIL_SUPPORT_CONTACT`;
+  see `backend/.env.example`). Without `SMTP_HOST`, confirmations still work and the
+  email is logged as "not configured" until you set it up and retry.
+
+**Real-time alerts.** Whenever a transaction is recorded (the Add transaction form, the
+API or a CSV upload), its sender is checked. If an analyst confirmed that account as
+fraud, a High-priority alert is raised (it also appears on Fraud Alerts) and pushed to
+every signed-in analyst over a WebSocket:
+- a bell with the unread count in the top bar, a dropdown of recent alerts and an on-screen
+  alert; clicking one opens the account at that transaction;
+- a **Notifications** page with the full history, filterable by unread;
+- read/unread per analyst, stored in the database, so alerts survive refreshes, new logins
+  and restarts; a browser that was offline catches up when it reconnects;
+- one alert per transaction. A retried submission carrying the same `Idempotency-Key`
+  header (the form sends one) or CSV `idempotency_key` is recorded once; reusing a key
+  for different details is rejected.
+
+**Who can do what.** Users with the `admin` or `analyst` role can review and confirm fraud,
+receive notifications and see model analytics. Other roles (e.g. `viewer`) use the rest of
+the console without them. Create users with `python -m scripts.create_user <name> --role analyst`.
+
+<table>
+  <tr>
+    <td width="50%"><b>Investigating an account</b> — status, evidence, email delivery and history<br><img src="docs/screenshots/account-investigation.png" alt="Account investigation"></td>
+    <td width="50%"><b>Real-time alert</b> — a confirmed-fraud account just made a ₹25,000 transfer<br><img src="docs/screenshots/realtime-alert.png" alt="Real-time alert"></td>
+  </tr>
+  <tr>
+    <td><b>Notification history</b> — persistent, with read/unread per analyst<br><img src="docs/screenshots/notification-history.png" alt="Notification history"></td>
+    <td><b>The account holder's email</b> (as delivered to a local test mail server)<br><img src="docs/screenshots/fraud-confirmation-email.png" alt="Fraud confirmation email"></td>
+  </tr>
+</table>
+
+## Model analytics: GraphSAGE vs GCN
+
+The **Model Analytics** page compares the two GNNs on the same held-out test nodes:
+- a metric comparison chart, with exact values and false positive/negative rates;
+- ROC and precision-recall curves (AUC and average precision in the legends);
+- a confusion-matrix heatmap for each model;
+- training and validation loss and accuracy per epoch;
+- the evaluation dataset, model version, evaluation time and decision threshold (0.5).
+
+Everything is computed from real predictions when a model is trained. Both models of a
+source use the same seeded split, verified by a fingerprint of the test nodes. 15% of the
+training nodes are held back to record the validation curves. The weights are saved, and
+their hash is the model version. The test predictions are saved too, so every number can
+be recomputed (the tests do exactly that). The page reads the saved results without
+retraining. Results saved before these were recorded show their summary metrics only,
+never filled-in curves.
+
+| Account graph, 1,249 test nodes | Accuracy | Precision | Recall | F1 | ROC-AUC | PR-AUC | FPR | FNR |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| **GraphSAGE** | 90.5% | 84.0% | 87.8% | **85.9%** | **96.3%** | **93.6%** | 8.2% | 12.2% |
+| GCN | 70.6% | 54.1% | 69.8% | 61.0% | 78.1% | 68.8% | 29.0% | 30.2% |
+
+![Model analytics](docs/screenshots/model-analytics.png)
 
 ## Screenshots
 
@@ -131,7 +234,7 @@ All screenshots are from a fresh install running the bundled synthetic dataset.
   </tr>
   <tr>
     <td><b>Transactions</b> — search, add, delete and CSV upload<br><img src="docs/screenshots/transactions.png" alt="Transactions"></td>
-    <td><b>Accounts</b> — search, add, edit and deactivate; risk levels from the rules<br><img src="docs/screenshots/accounts.png" alt="Accounts"></td>
+    <td><b>Accounts</b> — risk level and fraud status; filter by status, click through to investigate<br><img src="docs/screenshots/accounts.png" alt="Accounts"></td>
   </tr>
   <tr>
     <td><b>Data quality</b> — preprocessing checks and cleaning<br><img src="docs/screenshots/data-quality.png" alt="Data quality"></td>
@@ -196,17 +299,20 @@ the network structure adds signal the transaction totals alone don't carry.
 ### Graph neural networks
 
 Trained locally on CPU (PyTorch Geometric isn't installed on the Render free tier).
+The account-graph models were trained for 200 epochs each with the current code, on the
+same train / validation / test nodes. The Elliptic runs are earlier ones, trained before
+validation curves and PR-AUC were recorded.
 
-| Dataset | Model | Train / test nodes | Accuracy | Precision | Recall | F1 | ROC-AUC | Training time |
-|---|---|---:|---:|---:|---:|---:|---:|---:|
-| Account graph (5,000 nodes, 17 features) | **GraphSAGE** | 3,751 / 1,249 | 88.9% | 80.8% | 86.9% | **83.7%** | **95.7%** | 10.5 s |
-| Account graph | GCN | 3,751 / 1,249 | 72.4% | 56.8% | 66.9% | 61.5% | 78.6% | 45.7 s |
-| Elliptic Bitcoin (temporal split) | **GraphSAGE** | 29,894 / 16,670 | **95.7%** | 67.0% | 65.2% | **66.1%** | **90.4%** | 428.2 s |
-| Elliptic Bitcoin | GCN | 29,894 / 16,670 | 92.6% | 43.8% | 51.2% | 47.3% | 83.8% | 314.8 s |
+| Dataset | Model | Train / val / test nodes | Accuracy | Precision | Recall | F1 | ROC-AUC | PR-AUC | Training time |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Account graph (5,000 nodes, 17 features) | **GraphSAGE** | 3,188 / 563 / 1,249 | 90.5% | 84.0% | 87.8% | **85.9%** | **96.3%** | **93.6%** | 22.9 s |
+| Account graph | GCN | 3,188 / 563 / 1,249 | 70.6% | 54.1% | 69.8% | 61.0% | 78.1% | 68.8% | 24.8 s |
+| Elliptic Bitcoin (temporal split) | **GraphSAGE** | 29,894 / — / 16,670 | **95.7%** | 67.0% | 65.2% | **66.1%** | **90.4%** | — | 428.2 s |
+| Elliptic Bitcoin | GCN | 29,894 / — / 16,670 | 92.6% | 43.8% | 51.2% | 47.3% | 83.8% | — | 314.8 s |
 
-GraphSAGE beats GCN on both datasets, and on the account graph it edges out the
-best tabular model (F1 83.7% vs 83.1%), learning from each account's neighbours as
-well as its own features. Elliptic is the harder, realistic benchmark: only ~10% of its labelled
+GraphSAGE beats GCN on both datasets, and on the account graph it beats the best
+tabular model (F1 85.9% vs 83.1%), learning from each account's neighbours as well as
+its own features. Elliptic is the harder, realistic benchmark: only ~10% of its labelled
 transactions are illicit, and the model is tested on later time steps than it trained on.
 
 ### Alerts and fraud rings
@@ -235,8 +341,8 @@ transactions are illicit, and the model is tested on later time steps than it tr
 
 | | |
 |---|---|
-| Backend | ~3,900 lines of Python in 56 files · 47 REST endpoints · 7 database tables |
-| Frontend | ~3,100 lines of React in 38 files · 14 pages |
+| Backend | ~6,100 lines of Python in 74 files (incl. ~730 lines of tests) · 56 REST endpoints + 1 WebSocket · 11 database tables |
+| Frontend | ~4,500 lines of React in 47 files · 17 pages |
 | ML / graph | 6 rules · 17 features · 3 tabular models · 2 GNN architectures |
 
 ## Getting started
@@ -267,7 +373,9 @@ cp .env.example .env            # VITE_API_URL points to the backend
 npm run dev                     # http://localhost:5173
 ```
 
-Open http://localhost:5173 and log in with **admin / admin123**. That default only
+Open http://localhost:5173 and log in with **admin / admin123**.
+After pulling new code, `python -m scripts.init_db` (or simply starting the backend)
+applies any database migrations; existing data is kept. That default only
 works locally, where `.env` sets `APP_ENV=development`; anywhere else the backend
 refuses to start with placeholder or weak secrets (see [Deployment](#deployment)).
 
@@ -293,6 +401,21 @@ steps from the sidebar, in this order:
 Data Quality can run at any time, and GNN after Features. Then triage alerts on
 Fraud Alerts, open cases on Investigations, and download the PDF summary or CSV
 exports from Reports.
+
+## Running the tests
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+python -m pytest
+```
+The suite runs against its own temporary database and output folder, never yours. It covers:
+- the migrations;
+- fraud confirmation, the status rules and duplicate prevention;
+- email delivery to a real local SMTP server, including failures and retries;
+- real-time WebSocket alerts, persistence, reconnects and authorization;
+- model analytics, with every reported metric recomputed from the saved predictions
+  (the GNN tests need `requirements-gnn.txt`).
 
 ## Demo scenario
 
@@ -368,12 +491,16 @@ Every route except `POST /api/auth/login` and the `/` health check needs a JWT
 | `/api/graph` | analyze, status, metrics, an account's neighbourhood |
 | `/api/features` | build the matrix, status, preview |
 | `/api/ml` | train & score, results, top-risk accounts |
-| `/api/gnn` | train, results |
+| `/api/gnn` | train, results, GraphSAGE vs GCN evaluation* |
 | `/api/alerts` | generate, summary, list, update status |
 | `/api/rings` | detect, summary, ring detail with its graph |
 | `/api/cases` | summary, list, view, create, update, delete |
 | `/api/dashboard` | system-wide stats |
 | `/api/reports` | CSV exports, PDF summary |
+| `/api/accounts/{id}/investigation`, `/review`, `/emails/{id}/retry` | an account's evidence and history; mark under review / confirm fraud / clear; retry a holder email* |
+| `/api/notifications` | history with read state, unread count, mark read / unread / all read; live stream at `/api/notifications/ws` (WebSocket)* |
+
+\* fraud analysts only (`admin` or `analyst` role).
 
 ## Project structure
 
@@ -383,21 +510,26 @@ backend/
     api/            REST routes (one module per area)
     ml/             rules, graph build + analysis, features, baseline models, GNN,
                     alerts, fraud rings, preprocessing, output-file helpers
-    models/         SQLAlchemy tables: accounts, transactions, rule hits,
-                    graph metrics, alerts, cases, users
+    models/         SQLAlchemy tables: accounts, transactions, rule hits, graph metrics,
+                    alerts, cases, users, account status history, notifications,
+                    notification reads, email deliveries
+    services/       fraud review, analyst notifications (+ live broker), account-holder email
     schemas/        request/response models
-    core/           password hashing and JWTs
+    core/           password hashing, JWTs, money/date formatting
     config.py       settings (.env), production safety checks
+    migrations.py   additive schema migrations, applied at startup
+  tests/            pytest suite (own temporary database)
   data/
     raw/            the synthetic dataset (CSV) and a messy sample for cleaning
     generate_synthetic.py
-  scripts/          init_db, seed_data, render_start.sh, demo scenario
+  scripts/          init_db, seed_data, create_user, render_start.sh, demo scenario
 frontend/
   src/
-    pages/          one page per pipeline step (14)
+    pages/          one page per pipeline step, plus account investigation,
+                    model analytics and notifications (17)
     api/            API client per area
-    components/     layout, risk chips, dialogs, route guard
-    context/        login state
+    components/     layout, notification bell, status/risk chips, dialogs, route guard
+    context/        login state, live notifications
 docs/screenshots/   the images in this README
 render.yaml         Render Blueprint
 DEPLOYMENT.md       deployment guide
@@ -417,6 +549,16 @@ DEPLOYMENT.md       deployment guide
 - **Isolated demo.** The demo scenario copies the data with SQLite's backup API (read
   only), points the app at the copy before its database engine exists, and holds a
   lock while serving, so it can never touch the real data.
+- **Additive migrations.** New columns are added to existing tables with
+  `ALTER TABLE ... ADD COLUMN`, tracked in `schema_migrations`. Nothing is dropped or
+  recreated, so an existing database keeps all its rows.
+- **Notifications that can't be lost.** The database is the source of truth. A broker only
+  wakes the open WebSocket streams, which then read it, and they also re-check every 15 s.
+  A wake-up missed by another process or a reconnecting browser is still picked up. A
+  stream closes when its login token expires.
+- **Race-free confirmation.** Confirming fraud is a conditional update on the account's
+  current status, so of two analysts confirming at once only one changes it, and only
+  that one triggers the email.
 
 ## Build progress
 - [x] Phase 1: Backend foundation (database models, admin login)
@@ -436,3 +578,7 @@ DEPLOYMENT.md       deployment guide
 - [x] Phase 14: Reports & export (PDF summary, CSV exports)
 - [x] Deployment: Render + Vercel, production safety checks
 - [x] Demo scenario: scripted mule network on an isolated copy
+- [x] Model analytics: GraphSAGE vs GCN (ROC, PR, confusion matrices, training curves)
+- [x] Fraud review: manual confirmation with audit trail and roles
+- [x] Real-time WebSocket alerts for confirmed-fraud account activity
+- [x] Automated account-holder email after confirmation (SMTP, logged, retried)

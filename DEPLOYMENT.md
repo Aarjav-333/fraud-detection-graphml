@@ -80,6 +80,33 @@ GNN training will show "dependencies not installed" -- requirements-gnn.txt
 is intentionally not installed on Render's free tier (512MB RAM can't hold
 torch + xgboost + sklearn together). Use your local GNN results for the report.
 
+## Fraud review features (email, real-time alerts, analysts)
+
+- **Database changes apply themselves.** The start script runs `scripts.init_db`,
+  which adds new tables and columns to the existing database (nothing is dropped).
+- **Real-time alerts need no setup.** The frontend opens a WebSocket to the backend
+  at `wss://<your Render URL>/api/notifications/ws`, derived from `VITE_API_URL`.
+  Render supports WebSockets on the free tier.
+- **Account-holder email (optional).** Add these in Render -> Environment to send the
+  email that goes out when an analyst confirms fraud. Use your mail provider's SMTP
+  credentials (SendGrid, Mailgun, Amazon SES, Gmail with an app password, ...):
+    - SMTP_HOST, SMTP_PORT (587 for starttls, 465 for ssl)
+    - SMTP_USERNAME, SMTP_PASSWORD
+    - SMTP_SECURITY = starttls (default) or ssl. Any other value stops the backend at
+      startup, and so does `none` with a password in production (the password would be
+      sent unencrypted).
+    - EMAIL_FROM = an address your provider lets you send from
+    - EMAIL_FROM_NAME (default "Fraud Monitoring Team"), EMAIL_SUPPORT_CONTACT (optional)
+
+  Without them, confirming fraud still works. Each email is then logged as "not
+  configured" and can be retried from the account page once SMTP is set. The seeded
+  dataset's addresses are `example.com`-style test domains, so emails to those
+  accounts are logged as skipped, not sent.
+- **Analysts.** The admin user has full fraud-analyst rights. More users (role
+  `analyst` or `viewer`) are created with `python -m scripts.create_user <name>
+  --role analyst`. On Render's free tier there is no shell, and the disk resets on
+  redeploys, so create them locally or keep using the admin account.
+
 ## Redeploying after code changes
 
 Both Render and Vercel auto-deploy on git push origin main. No manual steps

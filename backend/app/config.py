@@ -1,6 +1,7 @@
 import os
 from urllib.parse import urlsplit
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Placeholder values shipped in this repo (config defaults, .env.example, README).
@@ -10,6 +11,7 @@ _PLACEHOLDER_ADMIN_PASSWORDS = ("admin123",)
 _MIN_SECRET_KEY_LENGTH = 32
 _MIN_SECRET_KEY_DISTINCT_CHARS = 10  # rejects "aaaa...", still allows hex keys
 _MIN_ADMIN_PASSWORD_LENGTH = 12
+SMTP_SECURITY_MODES = ("starttls", "ssl", "none")
 
 BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -35,8 +37,31 @@ class Settings(BaseSettings):
     # takes effect.
     PIPELINE_OUTPUT_DIR: str = ""
 
+    # Email to account holders when an analyst confirms their account as fraud.
+    # Leave SMTP_HOST empty and confirmations still work; each email is then
+    # logged as failed ("not configured") and can be retried once SMTP is set up.
+    # Credentials come only from the environment / .env, never from code.
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_SECURITY: str = "starttls"     # starttls | ssl | none
+    SMTP_TIMEOUT_SECONDS: float = 15
+    EMAIL_FROM: str = ""                # the sending address, e.g. fraud-alerts@yourbank.example
+    EMAIL_FROM_NAME: str = "Fraud Monitoring Team"
+    EMAIL_SUPPORT_CONTACT: str = ""     # how holders reach support, e.g. a URL or phone number
+
     # hide_input_in_errors keeps secret values out of validation errors/logs.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
+
+    @field_validator("SMTP_SECURITY")
+    @classmethod
+    def _known_smtp_security(cls, value: str) -> str:
+        # anything unrecognised would otherwise fall back to an unencrypted connection
+        value = value.strip().lower()
+        if value not in SMTP_SECURITY_MODES:
+            raise ValueError(f"must be one of: {', '.join(SMTP_SECURITY_MODES)}")
+        return value
 
     @property
     def is_development(self) -> bool:
@@ -81,6 +106,9 @@ class Settings(BaseSettings):
 
 def _insecure_setting_problems(s: Settings) -> list[str]:
     problems = []
+
+    if s.SMTP_HOST and s.SMTP_PASSWORD and s.SMTP_SECURITY == "none":
+        problems.append("SMTP_SECURITY=none would send the SMTP password unencrypted (use starttls or ssl)")
 
     key = s.SECRET_KEY
     if key != key.strip():

@@ -19,7 +19,7 @@ from app.models.account import Account
 ALERT_STATUSES = ["Pending", "Under Review", "Confirmed Fraud", "False Positive", "Resolved"]
 
 
-def _next_alert_num(db: Session) -> int:
+def next_alert_num(db: Session) -> int:
     last = db.query(Alert.alert_uid).order_by(Alert.id.desc()).first()
     if last and last[0] and last[0].startswith("ALT"):
         try:
@@ -38,7 +38,7 @@ def score_to_risk(score: float) -> str:
 
 
 def generate(db: Session, ml_threshold: float = 0.8) -> dict:
-    num = _next_alert_num(db)
+    num = next_alert_num(db)
     created_rule, created_ml = 0, 0
 
     # --- RULE alerts: one per suspicious transaction that has no alert yet ---

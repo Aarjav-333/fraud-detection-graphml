@@ -3,15 +3,17 @@
 Run from the backend/ folder:
     python -m scripts.init_db
 """
-from app.database import Base, engine, SessionLocal
+from app.database import engine, SessionLocal
 from app.config import settings
 from app.core.security import hash_password
-from app import models  # noqa: F401  (registers all tables on Base.metadata)
+from app.migrations import run_migrations
 from app.models.user import User
 
 
 def init():
-    Base.metadata.create_all(bind=engine)
+    applied = run_migrations(engine)   # creates missing tables and columns; keeps existing data
+    if applied:
+        print("Applied migrations: " + ", ".join(applied))
     db = SessionLocal()
     try:
         existing = db.query(User).filter(User.username == settings.ADMIN_USERNAME).first()

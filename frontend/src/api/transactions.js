@@ -6,8 +6,10 @@ export async function listTransactions({ skip = 0, limit = 25, q = '', fraudOnly
   })
   return res.data
 }
-export async function createTransaction(data) {
-  return (await client.post('/api/transactions', data)).data
+// idempotencyKey: one per submission, so a retried or double-clicked submit records it once
+export async function createTransaction(data, idempotencyKey) {
+  const headers = idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}
+  return (await client.post('/api/transactions', data, { headers })).data
 }
 export async function deleteTransaction(uid) {
   return (await client.delete(`/api/transactions/${uid}`)).data

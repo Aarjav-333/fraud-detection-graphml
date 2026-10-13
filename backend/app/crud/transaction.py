@@ -46,7 +46,11 @@ def get_transaction(db: Session, txn_uid: str) -> Optional[Transaction]:
     return db.query(Transaction).filter(Transaction.txn_uid == txn_uid).first()
 
 
-def create_transaction(db: Session, data: TransactionCreate) -> Transaction:
+def get_by_idempotency_key(db: Session, key: str) -> Optional[Transaction]:
+    return db.query(Transaction).filter(Transaction.idempotency_key == key).first()
+
+
+def create_transaction(db: Session, data: TransactionCreate, idempotency_key: Optional[str] = None) -> Transaction:
     txn = Transaction(
         txn_uid=next_txn_uid(db),
         sender_uid=data.sender_uid,
@@ -55,6 +59,7 @@ def create_transaction(db: Session, data: TransactionCreate) -> Transaction:
         timestamp=data.timestamp or datetime.utcnow(),
         txn_type=data.txn_type or "transfer",
         status="normal",
+        idempotency_key=idempotency_key,
     )
     db.add(txn)
     db.commit()

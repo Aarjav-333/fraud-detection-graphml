@@ -71,7 +71,8 @@ export default function Dashboard() {
         <Grid item xs={6} md={2}>
           <StatCard icon={<AccountBalanceWalletIcon />} label="Accounts"
             value={stats.accounts.total.toLocaleString('en-IN')}
-            sub={`${stats.accounts.high_risk} high risk`} onClick={() => navigate('/accounts')} />
+            sub={`${stats.accounts.high_risk} high risk · ${stats.accounts.confirmed_fraud ?? 0} confirmed fraud`}
+            onClick={() => navigate(stats.accounts.confirmed_fraud ? '/accounts?status=Confirmed%20Fraud' : '/accounts')} />
         </Grid>
         <Grid item xs={6} md={2}>
           <StatCard icon={<SwapHorizIcon />} label="Transactions"

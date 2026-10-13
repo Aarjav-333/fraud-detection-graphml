@@ -11,7 +11,8 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import and_
 
-from app.database import Base, SessionLocal, engine
+from app.database import SessionLocal, engine
+from app.migrations import run_migrations
 from app import models  # noqa: F401  (registers tables)
 from app.ml import alerts as alert_engine
 from app.ml import baseline, features, fraud_ring, graph_analysis
@@ -235,7 +236,7 @@ def report(db, rings: dict) -> None:
 def run(plant_only: bool) -> None:
     """Plant into the demo copy and, unless plant_only, run the pipeline and report."""
     check_pointed_at(DEMO_DIR, engine)   # never the real database or pipeline outputs
-    Base.metadata.create_all(bind=engine)   # the copy may predate newer tables
+    run_migrations(engine)   # the copy may predate newer tables and columns
     db = SessionLocal()
     try:
         plant(db)

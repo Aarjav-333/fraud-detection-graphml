@@ -6,8 +6,8 @@ Run from the backend/ folder (after generate_synthetic):
 import os
 import pandas as pd
 
-from app.database import SessionLocal, engine, Base
-from app import models  # noqa: F401  (registers tables)
+from app.database import SessionLocal, engine
+from app.migrations import run_migrations
 from app.models.account import Account
 from app.models.transaction import Transaction
 
@@ -15,7 +15,7 @@ RAW = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "raw")
 
 
 def seed():
-    Base.metadata.create_all(bind=engine)
+    run_migrations(engine)
     acc_path = os.path.join(RAW, "accounts.csv")
     txn_path = os.path.join(RAW, "transactions.csv")
     if not (os.path.exists(acc_path) and os.path.exists(txn_path)):

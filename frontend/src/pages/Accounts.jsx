@@ -1,8 +1,9 @@
 import { useEffect, useState, useCallback } from 'react'
+import { Link as RouterLink, useSearchParams } from 'react-router-dom'
 import {
   Box, Typography, Paper, Table, TableHead, TableBody, TableRow, TableCell,
   TablePagination, TextField, Button, IconButton, Dialog, DialogTitle, DialogContent,
-  DialogActions, Stack, MenuItem, Chip, InputAdornment, Tooltip, CircularProgress, Alert,
+  DialogActions, Stack, MenuItem, Chip, InputAdornment, Tooltip, CircularProgress, Alert, Link,
 } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
 import SearchIcon from '@mui/icons-material/Search'
@@ -10,6 +11,7 @@ import EditIcon from '@mui/icons-material/Edit'
 import BlockIcon from '@mui/icons-material/Block'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import RiskChip from '../components/RiskChip'
+import FraudStatusChip, { FRAUD_STATUSES } from '../components/FraudStatusChip'
 import ConfirmDialog from '../components/ConfirmDialog'
 import {
   listAccounts, createAccount, updateAccount, deactivateAccount, activateAccount,
@@ -27,6 +29,8 @@ export default function Accounts() {
   const [search, setSearch] = useState('')
   const [q, setQ] = useState('')
   const [loading, setLoading] = useState(false)
+  const [params, setParams] = useSearchParams()
+  const fraudStatus = FRAUD_STATUSES.includes(params.get('status')) ? params.get('status') : ''
 
   const [dialog, setDialog] = useState({ open: false, mode: 'add', uid: null })
   const [form, setForm] = useState(EMPTY)
@@ -36,13 +40,13 @@ export default function Accounts() {
   const fetchData = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await listAccounts({ skip: page * rowsPerPage, limit: rowsPerPage, q })
+      const data = await listAccounts({ skip: page * rowsPerPage, limit: rowsPerPage, q, fraudStatus })
       setRows(data.items)
       setTotal(data.total)
     } finally {
       setLoading(false)
     }
-  }, [page, rowsPerPage, q])
+  }, [page, rowsPerPage, q, fraudStatus])
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -100,11 +104,18 @@ export default function Accounts() {
       </Stack>
 
       <Paper sx={{ p: 2 }}>
-        <TextField
-          size="small" placeholder="Search by name, UID or email…" value={search}
-          onChange={(e) => setSearch(e.target.value)} sx={{ mb: 2, width: 340 }}
-          InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
-        />
+        <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
+          <TextField
+            size="small" placeholder="Search by name, UID or email…" value={search}
+            onChange={(e) => setSearch(e.target.value)} sx={{ width: 340 }}
+            InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
+          />
+          <TextField select size="small" label="Fraud status" value={fraudStatus} sx={{ width: 190 }}
+            onChange={(e) => { setPage(0); setParams(e.target.value ? { status: e.target.value } : {}) }}>
+            <MenuItem value="">All</MenuItem>
+            {FRAUD_STATUSES.map((s) => <MenuItem key={s} value={s}>{s}</MenuItem>)}
+          </TextField>
+        </Stack>
         <Box sx={{ overflowX: 'auto', position: 'relative' }}>
           {loading && (
             <Box sx={{ position: 'absolute', inset: 0, display: 'flex', justifyContent: 'center', pt: 4, zIndex: 1 }}>
@@ -120,6 +131,7 @@ export default function Accounts() {
                 <TableCell>Phone</TableCell>
                 <TableCell>Type</TableCell>
                 <TableCell>Risk</TableCell>
+                <TableCell>Fraud status</TableCell>
                 <TableCell>Status</TableCell>
                 <TableCell align="right">Actions</TableCell>
               </TableRow>
@@ -127,12 +139,17 @@ export default function Accounts() {
             <TableBody>
               {rows.map((r) => (
                 <TableRow key={r.account_uid} hover>
-                  <TableCell sx={{ fontFamily: 'monospace' }}>{r.account_uid}</TableCell>
+                  <TableCell sx={{ fontFamily: 'monospace' }}>
+                    <Link component={RouterLink} to={`/accounts/${encodeURIComponent(r.account_uid)}`} underline="hover">
+                      {r.account_uid}
+                    </Link>
+                  </TableCell>
                   <TableCell>{r.customer_name}</TableCell>
                   <TableCell>{r.email}</TableCell>
                   <TableCell>{r.phone}</TableCell>
                   <TableCell>{r.account_type}</TableCell>
                   <TableCell><RiskChip level={r.risk_level} /></TableCell>
+                  <TableCell><FraudStatusChip status={r.fraud_status} /></TableCell>
                   <TableCell>
                     <Chip size="small" label={r.is_active ? 'Active' : 'Inactive'}
                       color={r.is_active ? 'default' : 'error'} variant={r.is_active ? 'outlined' : 'filled'} />
@@ -148,7 +165,7 @@ export default function Accounts() {
                 </TableRow>
               ))}
               {!loading && rows.length === 0 && (
-                <TableRow><TableCell colSpan={8} align="center" sx={{ py: 4, color: 'text.secondary' }}>No accounts found</TableCell></TableRow>
+                <TableRow><TableCell colSpan={9} align="center" sx={{ py: 4, color: 'text.secondary' }}>No accounts found</TableCell></TableRow>
               )}
             </TableBody>
           </Table>

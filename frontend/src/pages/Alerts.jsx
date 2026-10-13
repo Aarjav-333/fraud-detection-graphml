@@ -1,8 +1,9 @@
 import { useEffect, useState, useCallback } from 'react'
+import { Link as RouterLink } from 'react-router-dom'
 import {
   Box, Typography, Paper, Grid, Button, Stack, Chip, Alert as MuiAlert,
   Table, TableHead, TableBody, TableRow, TableCell, TablePagination, TextField,
-  MenuItem, Select, InputAdornment, LinearProgress, Snackbar, Slider,
+  MenuItem, Select, InputAdornment, LinearProgress, Snackbar, Slider, Link,
 } from '@mui/material'
 import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive'
 import FolderSharedIcon from '@mui/icons-material/FolderShared'
@@ -172,7 +173,10 @@ export default function Alerts() {
                       color={r.type === 'Account' ? 'secondary' : 'default'} />
                   </TableCell>
                   <TableCell sx={{ fontFamily: 'monospace' }}>
-                    {r.transaction_uid || r.account_uid}
+                    <Link component={RouterLink} underline="hover" title={`Investigate ${r.account_uid}`}
+                      to={`/accounts/${encodeURIComponent(r.account_uid)}${r.transaction_uid ? `?txn=${encodeURIComponent(r.transaction_uid)}` : ''}`}>
+                      {r.transaction_uid || r.account_uid}
+                    </Link>
                   </TableCell>
                   <TableCell sx={{ maxWidth: 320 }}>
                     <Typography variant="body2" noWrap title={r.reason}>{r.reason}</Typography>

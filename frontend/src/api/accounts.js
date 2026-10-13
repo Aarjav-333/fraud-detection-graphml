@@ -1,8 +1,8 @@
 import client from './client'
 
-export async function listAccounts({ skip = 0, limit = 25, q = '', activeOnly = false } = {}) {
+export async function listAccounts({ skip = 0, limit = 25, q = '', activeOnly = false, fraudStatus = '' } = {}) {
   const res = await client.get('/api/accounts', {
-    params: { skip, limit, q: q || undefined, active_only: activeOnly },
+    params: { skip, limit, q: q || undefined, active_only: activeOnly, fraud_status: fraudStatus || undefined },
   })
   return res.data
 }

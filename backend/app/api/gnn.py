@@ -1,9 +1,9 @@
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, require_fraud_analyst
 from app.ml import gnn
 
 router = APIRouter(prefix="/api/gnn", tags=["gnn"], dependencies=[Depends(get_current_user)])
@@ -33,3 +33,10 @@ def status():
     except gnn.GNNDepsMissing:
         deps_ok = False
     return {"deps_installed": deps_ok, "results": gnn.load_results()}
+
+
+@router.get("/evaluation", dependencies=[Depends(require_fraud_analyst)])
+def evaluation(source: str = Query("synthetic", pattern="^(synthetic|elliptic)$")):
+    """GraphSAGE vs GCN on the same held-out test split, from the saved
+    evaluation results - nothing is retrained when this is read."""
+    return gnn.evaluation_report(source)

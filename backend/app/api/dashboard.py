@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.deps import get_current_user
-from app.models.account import Account
+from app.models.account import Account, REVIEW_CONFIRMED_FRAUD, REVIEW_UNDER_REVIEW
 from app.models.transaction import Transaction
 from app.models.alert import Alert
 from app.models.case import Case
@@ -23,6 +23,10 @@ def stats(db: Session = Depends(get_db)):
     total_accounts = db.query(Account).count()
     risk_counts = dict(
         db.query(Account.risk_level, func.count()).group_by(Account.risk_level).all()
+    )
+    review_counts = dict(
+        db.query(Account.review_status, func.count())
+          .filter(Account.review_status.isnot(None)).group_by(Account.review_status).all()
     )
 
     # --- transactions ---
@@ -73,6 +77,8 @@ def stats(db: Session = Depends(get_db)):
             "high_risk": risk_counts.get("High", 0),
             "medium_risk": risk_counts.get("Medium", 0),
             "low_risk": risk_counts.get("Low", 0),
+            "under_review": review_counts.get(REVIEW_UNDER_REVIEW, 0),
+            "confirmed_fraud": review_counts.get(REVIEW_CONFIRMED_FRAUD, 0),
         },
         "transactions": {
             "total": total_txns,

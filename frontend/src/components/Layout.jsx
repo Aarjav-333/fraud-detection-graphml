@@ -18,6 +18,10 @@ import FolderSharedIcon from '@mui/icons-material/FolderShared'
 import AssessmentIcon from '@mui/icons-material/Assessment'
 import ShieldIcon from '@mui/icons-material/Shield'
 import LogoutIcon from '@mui/icons-material/Logout'
+import InsightsIcon from '@mui/icons-material/Insights'
+import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive'
+import NotificationBell from './NotificationBell'
+import { isFraudAnalyst } from '../context/NotificationsContext'
 import { useAuth } from '../context/AuthContext'
 import { SIDEBAR_BG, SIDEBAR_FG } from '../theme'
 
@@ -33,7 +37,9 @@ const NAV = [
   { label: 'Features', path: '/features', icon: <TableChartIcon /> },
   { label: 'ML Scoring', path: '/ml', icon: <ModelTrainingIcon /> },
   { label: 'GNN', path: '/gnn', icon: <PsychologyIcon /> },
+  { label: 'Model Analytics', path: '/analytics', icon: <InsightsIcon />, analystOnly: true },
   { label: 'Fraud Alerts', path: '/alerts', icon: <WarningAmberIcon /> },
+  { label: 'Notifications', path: '/notifications', icon: <NotificationsActiveIcon />, analystOnly: true },
   { label: 'Fraud Rings', path: '/rings', icon: <GroupsIcon /> },
   { label: 'Investigations', path: '/cases', icon: <FolderSharedIcon /> },
   { label: 'Reports', path: '/reports', icon: <AssessmentIcon /> },
@@ -43,6 +49,8 @@ export default function Layout() {
   const navigate = useNavigate()
   const location = useLocation()
   const { user, logout } = useAuth()
+  const analyst = isFraudAnalyst(user)
+  const role = user?.role ? user.role[0].toUpperCase() + user.role.slice(1) : 'User'
 
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh' }}>
@@ -73,8 +81,8 @@ export default function Layout() {
         </Toolbar>
         <Divider sx={{ borderColor: '#1e293b' }} />
         <List sx={{ px: 1.5, pt: 1.5 }}>
-          {NAV.map((item) => {
-            const active = location.pathname === item.path
+          {NAV.filter((item) => analyst || !item.analystOnly).map((item) => {
+            const active = item.path === '/' ? location.pathname === '/' : location.pathname.startsWith(item.path)
             return (
               <ListItemButton
                 key={item.path}
@@ -97,14 +105,15 @@ export default function Layout() {
         </List>
       </Drawer>
 
-      <Box sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
+      <Box sx={{ flexGrow: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         <AppBar
           position="sticky"
           elevation={0}
           sx={{ bgcolor: 'background.paper', color: 'text.primary', borderBottom: '1px solid #e5e7eb' }}
         >
           <Toolbar sx={{ justifyContent: 'flex-end', gap: 2 }}>
-            <Chip size="small" label="Admin" color="primary" variant="outlined" />
+            <NotificationBell />
+            <Chip size="small" label={role} color="primary" variant="outlined" />
             <Avatar sx={{ width: 32, height: 32, bgcolor: 'primary.main', fontSize: 14 }}>
               {(user?.username || 'A')[0].toUpperCase()}
             </Avatar>

@@ -15,6 +15,10 @@ import FraudRings from './pages/FraudRings'
 import Alerts from './pages/Alerts'
 import Cases from './pages/Cases'
 import Reports from './pages/Reports'
+import AccountDetail from './pages/AccountDetail'
+import ModelAnalytics from './pages/ModelAnalytics'
+import Notifications from './pages/Notifications'
+import { NotificationsProvider } from './context/NotificationsContext'
 
 export default function App() {
   return (
@@ -23,12 +27,15 @@ export default function App() {
       <Route
         element={
           <ProtectedRoute>
-            <Layout />
+            <NotificationsProvider>
+              <Layout />
+            </NotificationsProvider>
           </ProtectedRoute>
         }
       >
         <Route path="/" element={<Dashboard />} />
         <Route path="/accounts" element={<Accounts />} />
+        <Route path="/accounts/:uid" element={<AccountDetail />} />
         <Route path="/transactions" element={<Transactions />} />
         <Route path="/data-quality" element={<DataQuality />} />
         <Route path="/rules" element={<RuleDetection />} />
@@ -36,6 +43,8 @@ export default function App() {
         <Route path="/features" element={<Features />} />
         <Route path="/ml" element={<MLScoring />} />
         <Route path="/gnn" element={<GNN />} />
+        <Route path="/analytics" element={<ModelAnalytics />} />
+        <Route path="/notifications" element={<Notifications />} />
         <Route path="/rings" element={<FraudRings />} />
         <Route path="/alerts" element={<Alerts />} />
         <Route path="/cases" element={<Cases />} />

@@ -16,3 +16,6 @@ class Transaction(Base):
     status = Column(String, default="normal")    # normal / suspicious
     is_fraud = Column(Integer, default=0)        # ground-truth label if known (0/1)
     fraud_score = Column(Float, default=0.0)
+    # Set by the client (Idempotency-Key header, or a CSV column) so a retried
+    # submission returns the original transaction instead of recording it twice
+    idempotency_key = Column(String, unique=True, index=True)
